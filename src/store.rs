@@ -790,7 +790,12 @@ impl Store {
     fn configure_merge_driver(&self) -> Result<()> {
         use std::process::Command;
 
+        // Find repo root so git config --local targets the correct .git/config
+        let mut repo_root = self.base_path.clone();
+        while !repo_root.join(".git").exists() && repo_root.pop() {}
+
         let output = Command::new("git")
+            .current_dir(&repo_root)
             .args([
                 "config",
                 "--local",
@@ -804,6 +809,7 @@ impl Store {
         }
 
         let output = Command::new("git")
+            .current_dir(&repo_root)
             .args([
                 "config",
                 "--local",
