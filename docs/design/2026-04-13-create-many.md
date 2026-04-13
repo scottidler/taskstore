@@ -61,6 +61,11 @@ Add `create_many` to `Store` and a new `append_jsonl_many` helper. The method va
 ///
 /// Returns the IDs of all created records, in insertion order.
 /// An empty input vec returns an empty vec (no-op).
+///
+/// **Duplicate ID behavior:** Unlike calling `create` in a loop (where each call
+/// silently overwrites via `INSERT OR REPLACE`), `create_many` rejects duplicate IDs
+/// within the same batch and returns an error before any I/O. Callers migrating a
+/// loop of `create` calls to a single `create_many` must deduplicate the input first.
 pub fn create_many<T: Record>(&mut self, records: Vec<T>) -> Result<Vec<String>> {
     // ...
 }
@@ -234,7 +239,7 @@ pub fn create_many<T: Record>(&mut self, records: Vec<T>) -> Result<Vec<String>>
 }
 ```
 
-**Single serialization:** Each record is serialized exactly once during the preparation phase. The resulting JSON string is reused for both the JSONL buffer and the SQLite `data_json` column. This is strictly better than the existing `create` method, which serializes twice (once in `append_jsonl_generic`, once for SQLite).
+**Single serialization:** Each record is serialized exactly once during the preparation phase. The resulting JSON string is reused for both the JSONL buffer and the SQLite `data_json` column. This is an improvement over the legacy `create` method (prior to Phase 5), which serialized twice - once in `append_jsonl_generic` and again for the SQLite insert. After Phase 5, `create` delegates to `create_many` and shares the same single-serialization path.
 
 #### INSERT OR REPLACE semantics
 
@@ -292,7 +297,7 @@ No schema changes. `create_many` writes to the same `records` and `record_indexe
 - `test_create_many_duplicate_ids` - returns error, nothing written
 - `test_create_many_invalid_id` - one bad ID fails the whole batch
 - `test_create_many_indexes` - verify indexed fields work for batch-created records
-- `test_create_many_overwrites` - verify INSERT OR REPLACE works for existing IDs
+- `test_create_many_overwrites` - verify INSERT OR REPLACE works for existing IDs; also verify via `list()` filters that old index entries (pre-overwrite values) are deleted and new entries are queryable
 - `test_create_many_jsonl_atomicity` - verify all records appear in JSONL file after batch write
 - `test_create_many_validation_before_write` - verify that a batch with one invalid indexed field name fails without writing anything to JSONL
 
@@ -303,7 +308,7 @@ No schema changes. `create_many` writes to the same `records` and `record_indexe
 
 #### Phase 5: Refactor `create` to delegate to `create_many`
 **Model:** sonnet
-- Rewrite `create` as: `self.create_many(vec![record]).map(|ids| ids.into_iter().next().unwrap())`
+- Rewrite `create` as: `self.create_many(vec![record]).map(|ids| ids.into_iter().next().expect("create_many with one record yields one id"))`
 - This fixes the legacy torn-write bug in `create` (serialization + field validation after JSONL write)
 - Guarantees `create` and `create_many` can never diverge in behavior
 - Update `create`'s tests to verify the pre-validation guarantee (e.g., invalid field name does not write to JSONL)
