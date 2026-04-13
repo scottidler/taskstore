@@ -1168,4 +1168,367 @@ mod tests {
         assert!(Store::validate_field_name("").is_err());
         assert!(Store::validate_field_name(&"a".repeat(65)).is_err());
     }
+
+    // ========================================================================
+    // create_many tests
+    // ========================================================================
+
+    // Record type whose indexed_fields() returns a hyphenated (invalid) field name,
+    // used to test that validation catches bad field names before any I/O.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct BadFieldRecord {
+        id: String,
+        updated_at: i64,
+    }
+
+    impl Record for BadFieldRecord {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn updated_at(&self) -> i64 {
+            self.updated_at
+        }
+        fn collection_name() -> &'static str {
+            "bad_field_records"
+        }
+        fn indexed_fields(&self) -> HashMap<String, IndexValue> {
+            let mut fields = HashMap::new();
+            fields.insert("bad-field".to_string(), IndexValue::String("val".to_string()));
+            fields
+        }
+    }
+
+    #[test]
+    fn test_create_many_basic() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let records: Vec<TestRecord> = (1..=3)
+            .map(|i| TestRecord {
+                id: format!("rec{}", i),
+                name: format!("Record {}", i),
+                status: "active".to_string(),
+                count: i,
+                active: true,
+                updated_at: 1000 * i,
+            })
+            .collect();
+
+        let ids = store.create_many(records.clone()).unwrap();
+        assert_eq!(ids, vec!["rec1", "rec2", "rec3"]);
+
+        // All retrievable via get
+        for record in &records {
+            let retrieved: Option<TestRecord> = store.get(record.id()).unwrap();
+            assert!(retrieved.is_some());
+            assert_eq!(retrieved.unwrap().name, record.name);
+        }
+
+        // All visible via list
+        let listed: Vec<TestRecord> = store.list(&[]).unwrap();
+        assert_eq!(listed.len(), 3);
+    }
+
+    #[test]
+    fn test_create_many_empty() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let ids = store.create_many::<TestRecord>(vec![]).unwrap();
+        assert!(ids.is_empty());
+
+        // No JSONL file created
+        let jsonl_path = temp.path().join(".taskstore/test_records.jsonl");
+        assert!(!jsonl_path.exists());
+    }
+
+    #[test]
+    fn test_create_many_single() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let record = TestRecord {
+            id: "rec1".to_string(),
+            name: "Record 1".to_string(),
+            status: "active".to_string(),
+            count: 1,
+            active: true,
+            updated_at: 1000,
+        };
+
+        let ids = store.create_many(vec![record.clone()]).unwrap();
+        assert_eq!(ids, vec!["rec1"]);
+
+        let retrieved: Option<TestRecord> = store.get("rec1").unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap(), record);
+    }
+
+    #[test]
+    fn test_create_many_duplicate_ids() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        // Pre-populate to establish the JSONL file
+        store
+            .create(TestRecord {
+                id: "existing".to_string(),
+                name: "Existing".to_string(),
+                status: "active".to_string(),
+                count: 0,
+                active: true,
+                updated_at: 1000,
+            })
+            .unwrap();
+
+        let jsonl_path = temp.path().join(".taskstore/test_records.jsonl");
+        let size_before = fs::metadata(&jsonl_path).unwrap().len();
+
+        // Batch with duplicate IDs should fail
+        let result = store.create_many(vec![
+            TestRecord {
+                id: "dup".to_string(),
+                name: "First".to_string(),
+                status: "active".to_string(),
+                count: 1,
+                active: true,
+                updated_at: 1001,
+            },
+            TestRecord {
+                id: "dup".to_string(),
+                name: "Second".to_string(),
+                status: "active".to_string(),
+                count: 2,
+                active: true,
+                updated_at: 1002,
+            },
+        ]);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate ID"));
+
+        // JSONL must be unchanged (nothing written)
+        let size_after = fs::metadata(&jsonl_path).unwrap().len();
+        assert_eq!(size_before, size_after);
+    }
+
+    #[test]
+    fn test_create_many_invalid_id() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        // Pre-populate to establish the JSONL file
+        store
+            .create(TestRecord {
+                id: "existing".to_string(),
+                name: "Existing".to_string(),
+                status: "active".to_string(),
+                count: 0,
+                active: true,
+                updated_at: 1000,
+            })
+            .unwrap();
+
+        let jsonl_path = temp.path().join(".taskstore/test_records.jsonl");
+        let size_before = fs::metadata(&jsonl_path).unwrap().len();
+
+        // Batch containing an invalid (whitespace-only) ID should fail
+        let result = store.create_many(vec![
+            TestRecord {
+                id: "valid".to_string(),
+                name: "Valid".to_string(),
+                status: "active".to_string(),
+                count: 1,
+                active: true,
+                updated_at: 1001,
+            },
+            TestRecord {
+                id: "   ".to_string(),
+                name: "Invalid".to_string(),
+                status: "active".to_string(),
+                count: 2,
+                active: true,
+                updated_at: 1002,
+            },
+        ]);
+
+        assert!(result.is_err());
+
+        // JSONL must be unchanged (nothing written)
+        let size_after = fs::metadata(&jsonl_path).unwrap().len();
+        assert_eq!(size_before, size_after);
+    }
+
+    #[test]
+    fn test_create_many_indexes() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        store
+            .create_many(vec![
+                TestRecord {
+                    id: "rec1".to_string(),
+                    name: "Record 1".to_string(),
+                    status: "active".to_string(),
+                    count: 1,
+                    active: true,
+                    updated_at: 1000,
+                },
+                TestRecord {
+                    id: "rec2".to_string(),
+                    name: "Record 2".to_string(),
+                    status: "draft".to_string(),
+                    count: 2,
+                    active: false,
+                    updated_at: 1001,
+                },
+                TestRecord {
+                    id: "rec3".to_string(),
+                    name: "Record 3".to_string(),
+                    status: "active".to_string(),
+                    count: 3,
+                    active: true,
+                    updated_at: 1002,
+                },
+            ])
+            .unwrap();
+
+        // Filter by status = "active"
+        let active: Vec<TestRecord> = store
+            .list(&[Filter {
+                field: "status".to_string(),
+                op: crate::filter::FilterOp::Eq,
+                value: IndexValue::String("active".to_string()),
+            }])
+            .unwrap();
+        assert_eq!(active.len(), 2);
+
+        // Filter by active = false
+        let inactive: Vec<TestRecord> = store
+            .list(&[Filter {
+                field: "active".to_string(),
+                op: crate::filter::FilterOp::Eq,
+                value: IndexValue::Bool(false),
+            }])
+            .unwrap();
+        assert_eq!(inactive.len(), 1);
+        assert_eq!(inactive[0].id, "rec2");
+    }
+
+    #[test]
+    fn test_create_many_overwrites() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        // Create an initial record via create
+        store
+            .create(TestRecord {
+                id: "rec1".to_string(),
+                name: "Original".to_string(),
+                status: "draft".to_string(),
+                count: 1,
+                active: false,
+                updated_at: 1000,
+            })
+            .unwrap();
+
+        // Overwrite via create_many (INSERT OR REPLACE)
+        store
+            .create_many(vec![TestRecord {
+                id: "rec1".to_string(),
+                name: "Updated".to_string(),
+                status: "active".to_string(),
+                count: 99,
+                active: true,
+                updated_at: 2000,
+            }])
+            .unwrap();
+
+        let retrieved: Option<TestRecord> = store.get("rec1").unwrap();
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.name, "Updated");
+        assert_eq!(retrieved.count, 99);
+        assert!(retrieved.active);
+    }
+
+    #[test]
+    fn test_create_many_jsonl_batch_write() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let records: Vec<TestRecord> = (1..=3)
+            .map(|i| TestRecord {
+                id: format!("rec{}", i),
+                name: format!("Record {}", i),
+                status: "active".to_string(),
+                count: i,
+                active: true,
+                updated_at: 1000 * i,
+            })
+            .collect();
+
+        store.create_many(records).unwrap();
+
+        // JSONL file must have exactly 3 lines, each valid JSON
+        let jsonl_path = temp.path().join(".taskstore/test_records.jsonl");
+        let content = fs::read_to_string(&jsonl_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            assert!(serde_json::from_str::<serde_json::Value>(line).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_create_many_validation_before_write() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        // BadFieldRecord returns a hyphenated field name which fails validate_field_name
+        let result = store.create_many(vec![BadFieldRecord {
+            id: "rec1".to_string(),
+            updated_at: 1000,
+        }]);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid field name"));
+
+        // JSONL must not exist - nothing was written
+        let jsonl_path = temp.path().join(".taskstore/bad_field_records.jsonl");
+        assert!(!jsonl_path.exists());
+    }
+
+    #[test]
+    fn test_create_many_jsonl_heals_sqlite() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let records: Vec<TestRecord> = (1..=3)
+            .map(|i| TestRecord {
+                id: format!("rec{}", i),
+                name: format!("Record {}", i),
+                status: "active".to_string(),
+                count: i,
+                active: true,
+                updated_at: 1000 * i,
+            })
+            .collect();
+
+        store.create_many(records).unwrap();
+        drop(store);
+
+        // Delete the database to simulate corruption/loss
+        let db_path = temp.path().join(".taskstore/taskstore.db");
+        fs::remove_file(&db_path).unwrap();
+
+        // Re-open forces sync from JSONL
+        let store2 = Store::open(temp.path()).unwrap();
+
+        // All records should be recoverable from JSONL
+        for i in 1..=3 {
+            let retrieved: Option<TestRecord> = store2.get(&format!("rec{}", i)).unwrap();
+            assert!(retrieved.is_some(), "rec{} should be recoverable from JSONL", i);
+            assert_eq!(retrieved.unwrap().name, format!("Record {}", i));
+        }
+    }
 }
