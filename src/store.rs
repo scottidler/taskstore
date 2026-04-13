@@ -238,6 +238,74 @@ impl Store {
         }
     }
 
+    /// Create multiple records of the same type in a single atomic batch.
+    ///
+    /// All records are validated upfront. If any record fails validation,
+    /// no records are written. JSONL receives a single `write_all` call
+    /// for the entire batch. SQLite wraps all inserts in one transaction.
+    ///
+    /// Returns the IDs of all created records, in insertion order.
+    /// An empty input vec returns an empty vec (no-op).
+    pub fn create_many<T: Record>(&mut self, records: Vec<T>) -> Result<Vec<String>> {
+        if records.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let collection = T::collection_name();
+        debug!("create_many: collection={} count={}", collection, records.len());
+        if records.len() > 1000 {
+            warn!(
+                "create_many: large batch of {} records for {}",
+                records.len(),
+                collection
+            );
+        }
+        Self::validate_collection_name(collection)?;
+
+        // === Validation + preparation phase (no I/O) ===
+        let mut ids = Vec::with_capacity(records.len());
+        let mut seen = std::collections::HashSet::with_capacity(records.len());
+        let mut prepared: Vec<(String, String, std::collections::HashMap<String, IndexValue>, i64)> =
+            Vec::with_capacity(records.len());
+
+        for record in &records {
+            let id = record.id().to_string();
+            Self::validate_id(&id)?;
+            if !seen.insert(id.clone()) {
+                return Err(eyre!("Duplicate ID in batch: {}", id));
+            }
+
+            let data_json = serde_json::to_string(record).context("Failed to serialize record")?;
+
+            let fields = record.indexed_fields();
+            for field_name in fields.keys() {
+                Self::validate_field_name(field_name)?;
+            }
+
+            ids.push(id.clone());
+            prepared.push((id, data_json, fields, record.updated_at()));
+        }
+
+        // === JSONL write phase (single write_all + sync_all) ===
+        let json_lines: Vec<&str> = prepared.iter().map(|(_, json, _, _)| json.as_str()).collect();
+        self.append_jsonl_batch(collection, &json_lines)?;
+
+        // === SQLite write phase (single transaction) ===
+        let tx = self.db.transaction()?;
+        for (id, data_json, fields, updated_at) in &prepared {
+            tx.execute(
+                "INSERT OR REPLACE INTO records (collection, id, data_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![collection, id, data_json, updated_at],
+            )?;
+            Self::update_indexes_tx(&tx, collection, id, fields)?;
+        }
+        tx.commit()?;
+
+        info!("create_many: committed {} records to {}", ids.len(), collection);
+        Ok(ids)
+    }
+
     /// Update a record (same as create for now)
     pub fn update<T: Record>(&mut self, record: T) -> Result<()> {
         self.create(record)?;
@@ -442,6 +510,32 @@ impl Store {
         file.sync_all()?;
 
         // Lock is automatically released when file is dropped
+        Ok(())
+    }
+
+    fn append_jsonl_batch(&self, collection: &str, json_lines: &[&str]) -> Result<()> {
+        let jsonl_path = self.base_path.join(format!("{}.jsonl", collection));
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&jsonl_path)
+            .context("Failed to open JSONL file for appending")?;
+
+        file.lock_exclusive().context("Failed to acquire file lock")?;
+
+        // Build buffer from already-serialized JSON strings (pre-allocate to avoid reallocations)
+        let total_len: usize = json_lines.iter().map(|s| s.len() + 1).sum();
+        let mut buf = String::with_capacity(total_len);
+        for json in json_lines {
+            buf.push_str(json);
+            buf.push('\n');
+        }
+
+        use std::io::Write;
+        file.write_all(buf.as_bytes())?;
+        file.sync_all()?;
+
         Ok(())
     }
 
