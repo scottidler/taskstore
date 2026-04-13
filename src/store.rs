@@ -225,6 +225,11 @@ impl Store {
     ///
     /// Returns the IDs of all created records, in insertion order.
     /// An empty input vec returns an empty vec (no-op).
+    ///
+    /// **Duplicate ID behavior:** Unlike calling `create` in a loop (where each call
+    /// silently overwrites via `INSERT OR REPLACE`), `create_many` rejects duplicate IDs
+    /// within the same batch and returns an error before any I/O. Callers migrating a
+    /// loop of `create` calls to a single `create_many` must deduplicate the input first.
     pub fn create_many<T: Record>(&mut self, records: Vec<T>) -> Result<Vec<String>> {
         if records.is_empty() {
             return Ok(vec![]);
@@ -513,6 +518,9 @@ impl Store {
         // Insert new indexes
         for (field_name, value) in fields {
             debug!(collection, id, field_name, ?value, "update_indexes_tx: inserting index");
+            // Field names were already validated in create_many's preparation phase before
+            // any I/O. This call is defense-in-depth for direct callers of update_indexes_tx
+            // and cannot introduce a new failure mode when reached via create_many.
             Self::validate_field_name(field_name)?;
 
             match value {
@@ -1406,6 +1414,39 @@ mod tests {
         assert_eq!(retrieved.name, "Updated");
         assert_eq!(retrieved.count, 99);
         assert!(retrieved.active);
+
+        // Verify indexes were updated: old values ("draft", false) must be gone,
+        // new values ("active", true) must be queryable.
+        let by_draft: Vec<TestRecord> = store
+            .list(&[Filter {
+                field: "status".to_string(),
+                op: crate::filter::FilterOp::Eq,
+                value: IndexValue::String("draft".to_string()),
+            }])
+            .unwrap();
+        assert!(by_draft.is_empty(), "stale 'draft' index entry should be gone");
+
+        let by_active: Vec<TestRecord> = store
+            .list(&[Filter {
+                field: "status".to_string(),
+                op: crate::filter::FilterOp::Eq,
+                value: IndexValue::String("active".to_string()),
+            }])
+            .unwrap();
+        assert_eq!(by_active.len(), 1);
+        assert_eq!(by_active[0].id, "rec1");
+
+        let by_inactive: Vec<TestRecord> = store
+            .list(&[Filter {
+                field: "active".to_string(),
+                op: crate::filter::FilterOp::Eq,
+                value: IndexValue::Bool(false),
+            }])
+            .unwrap();
+        assert!(
+            by_inactive.is_empty(),
+            "stale 'active=false' index entry should be gone"
+        );
     }
 
     #[test]

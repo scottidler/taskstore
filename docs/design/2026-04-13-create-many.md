@@ -365,11 +365,11 @@ Unit tests in `store.rs` using `tempfile::TempDir`, same pattern as existing tes
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| Partial JSONL write on crash (torn write) | Low | Low | JSONL replay skips the one malformed line. K complete records survive, 1 partial is skipped, N-K-1 are lost. This is the same class of failure as individual `create` but with a much narrower crash window. |
+| Partial JSONL write on crash (torn write) | Low | Low | JSONL replay skips the one malformed line. K complete records survive, 1 partial is skipped, N-K-1 are lost. For a batch of N, this is a narrower crash window than N individual `create` calls (N separate file opens vs 1). For N=1, the crash window is identical. |
 | Large batch exceeds reasonable memory | Very Low | Low | Batches are bounded by hierarchy size (~30 records max in practice). No artificial limit needed. |
-| SQLite transaction fails after JSONL write succeeds | Low | Low | Same as current `create` behavior - JSONL has the data, SQLite rebuilds from JSONL on next sync. |
+| SQLite transaction fails after JSONL write succeeds | Low | Low | JSONL is the source of truth; SQLite is a derived cache. Records in JSONL are recovered on next `Store::open` via `sync()`. The caller receives an error and may retry - duplicate IDs on retry are handled by `INSERT OR REPLACE`. |
 | Duplicate ID within batch causes silent overwrite | Medium | Medium | Explicit duplicate check in validation phase returns an error before any writes. |
-| Invalid indexed field name fails during SQLite phase (after JSONL write) | None | None | **Fixed in this design.** Indexed field names are pre-validated during the preparation phase, before any I/O. This is strictly better than `create`, which validates field names inside `update_indexes_tx` after the JSONL write. The redundant validation in `update_indexes_tx` remains as defense-in-depth but cannot trigger a new failure mode. |
+| Invalid indexed field name fails during SQLite phase (after JSONL write) | None | None | Field names are pre-validated in the preparation phase before any I/O. The redundant `validate_field_name` call in `update_indexes_tx` is defense-in-depth for direct callers and cannot trigger a new failure mode when reached via `create_many` or `create` (which now delegates to `create_many`). |
 
 ## Open Questions
 
