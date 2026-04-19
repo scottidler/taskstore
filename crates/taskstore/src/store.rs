@@ -1,17 +1,28 @@
 // Generic store implementation using JSONL + SQLite
 
-use crate::filter::{Filter, FilterOp};
 use crate::jsonl;
-use crate::record::{IndexValue, Record};
 use eyre::{Context, Result, eyre};
 use fs2::FileExt;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::fs;
 use std::path::{Path, PathBuf};
+use taskstore_traits::{Filter, FilterOp, IndexValue, Record};
 use tracing::{debug, info, warn};
 
 const CURRENT_VERSION: u32 = 1;
+
+fn filter_op_to_sql(op: FilterOp) -> &'static str {
+    match op {
+        FilterOp::Eq => "=",
+        FilterOp::Ne => "!=",
+        FilterOp::Gt => ">",
+        FilterOp::Lt => "<",
+        FilterOp::Gte => ">=",
+        FilterOp::Lte => "<=",
+        FilterOp::Contains => "LIKE",
+    }
+}
 
 /// Generic persistent store with SQLite cache and JSONL source of truth
 pub struct Store {
@@ -388,7 +399,7 @@ impl Store {
                     query.push_str(&format!(
                         " AND {}.field_value_str {} ?{}",
                         join_alias,
-                        filter.op.to_sql(),
+                        filter_op_to_sql(filter.op),
                         i + 2 + filters.len()
                     ));
                 }
@@ -396,7 +407,7 @@ impl Store {
                     query.push_str(&format!(
                         " AND {}.field_value_int {} ?{}",
                         join_alias,
-                        filter.op.to_sql(),
+                        filter_op_to_sql(filter.op),
                         i + 2 + filters.len()
                     ));
                 }
@@ -404,7 +415,7 @@ impl Store {
                     query.push_str(&format!(
                         " AND {}.field_value_bool {} ?{}",
                         join_alias,
-                        filter.op.to_sql(),
+                        filter_op_to_sql(filter.op),
                         i + 2 + filters.len()
                     ));
                 }
@@ -1102,7 +1113,7 @@ mod tests {
         // Filter by status = "active"
         let filters = vec![Filter {
             field: "status".to_string(),
-            op: crate::filter::FilterOp::Eq,
+            op: taskstore_traits::FilterOp::Eq,
             value: IndexValue::String("active".to_string()),
         }];
 
@@ -1362,7 +1373,7 @@ mod tests {
         let active: Vec<TestRecord> = store
             .list(&[Filter {
                 field: "status".to_string(),
-                op: crate::filter::FilterOp::Eq,
+                op: taskstore_traits::FilterOp::Eq,
                 value: IndexValue::String("active".to_string()),
             }])
             .unwrap();
@@ -1372,7 +1383,7 @@ mod tests {
         let inactive: Vec<TestRecord> = store
             .list(&[Filter {
                 field: "active".to_string(),
-                op: crate::filter::FilterOp::Eq,
+                op: taskstore_traits::FilterOp::Eq,
                 value: IndexValue::Bool(false),
             }])
             .unwrap();
@@ -1420,7 +1431,7 @@ mod tests {
         let by_draft: Vec<TestRecord> = store
             .list(&[Filter {
                 field: "status".to_string(),
-                op: crate::filter::FilterOp::Eq,
+                op: taskstore_traits::FilterOp::Eq,
                 value: IndexValue::String("draft".to_string()),
             }])
             .unwrap();
@@ -1429,7 +1440,7 @@ mod tests {
         let by_active: Vec<TestRecord> = store
             .list(&[Filter {
                 field: "status".to_string(),
-                op: crate::filter::FilterOp::Eq,
+                op: taskstore_traits::FilterOp::Eq,
                 value: IndexValue::String("active".to_string()),
             }])
             .unwrap();
@@ -1439,7 +1450,7 @@ mod tests {
         let by_inactive: Vec<TestRecord> = store
             .list(&[Filter {
                 field: "active".to_string(),
-                op: crate::filter::FilterOp::Eq,
+                op: taskstore_traits::FilterOp::Eq,
                 value: IndexValue::Bool(false),
             }])
             .unwrap();
@@ -1528,5 +1539,16 @@ mod tests {
             assert!(retrieved.is_some(), "rec{} should be recoverable from JSONL", i);
             assert_eq!(retrieved.unwrap().name, format!("Record {}", i));
         }
+    }
+
+    #[test]
+    fn test_filter_op_to_sql() {
+        assert_eq!(filter_op_to_sql(FilterOp::Eq), "=");
+        assert_eq!(filter_op_to_sql(FilterOp::Ne), "!=");
+        assert_eq!(filter_op_to_sql(FilterOp::Gt), ">");
+        assert_eq!(filter_op_to_sql(FilterOp::Lt), "<");
+        assert_eq!(filter_op_to_sql(FilterOp::Gte), ">=");
+        assert_eq!(filter_op_to_sql(FilterOp::Lte), "<=");
+        assert_eq!(filter_op_to_sql(FilterOp::Contains), "LIKE");
     }
 }

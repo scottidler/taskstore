@@ -16,6 +16,51 @@ TaskStore is a Rust library and CLI for managing persistent state with a unique 
 - **Append-only semantics**: JSONL files track full history, latest version wins
 - **Type-safe API**: Generic Record trait for any Rust type
 
+## Workspace structure
+
+This repository is a two-crate Cargo workspace:
+
+| Crate | Purpose | Deps |
+|-------|---------|------|
+| `taskstore-traits` | `Record` trait, `IndexValue`, `Filter`, `FilterOp` | `serde` only |
+| `taskstore` | Full storage engine, CLI, re-exports traits | `rusqlite`, `fs2`, `chrono`, etc. |
+
+### Depending on the lean trait surface only
+
+If your crate only needs `Record` and filter types (no `Store`, no I/O), depend on `taskstore-traits` directly:
+
+```toml
+[dependencies]
+taskstore-traits = { git = "ssh://git@github.com/scottidler/taskstore", branch = "main" }
+```
+
+Existing consumers of `taskstore` keep working unchanged - all types are re-exported from the full crate:
+
+```rust
+use taskstore::{Record, IndexValue, Filter, FilterOp};  // still works
+```
+
+### Depending on both crates (critical: use the same source pointer)
+
+If your workspace depends on both `taskstore-traits` and `taskstore`, declare both in your root `[workspace.dependencies]` and inherit with `workspace = true`. This structurally prevents split-brain errors where Cargo instantiates `taskstore-traits` twice from different commits, causing opaque type-mismatch errors (`expected Record, found Record`).
+
+```toml
+# Your root Cargo.toml
+[workspace.dependencies]
+taskstore-traits = { git = "ssh://git@github.com/scottidler/taskstore", branch = "main" }
+taskstore        = { git = "ssh://git@github.com/scottidler/taskstore", branch = "main" }
+
+# Lean crate (domain logic only)
+[dependencies]
+taskstore-traits = { workspace = true }
+
+# Full crate (needs Store)
+[dependencies]
+taskstore = { workspace = true }
+```
+
+Both deps must share the same source pointer (`branch`, `rev`, or same-commit tags). The recommended default is `branch = "main"` for both; use `rev = "<sha>"` for reproducible builds.
+
 ## Installation
 
 ### Build from source

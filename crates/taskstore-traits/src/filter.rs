@@ -25,21 +25,6 @@ pub enum FilterOp {
     Contains, // LIKE %value%
 }
 
-impl FilterOp {
-    #[allow(dead_code)]
-    pub(crate) fn to_sql(self) -> &'static str {
-        match self {
-            FilterOp::Eq => "=",
-            FilterOp::Ne => "!=",
-            FilterOp::Gt => ">",
-            FilterOp::Lt => "<",
-            FilterOp::Gte => ">=",
-            FilterOp::Lte => "<=",
-            FilterOp::Contains => "LIKE",
-        }
-    }
-}
-
 impl std::fmt::Display for FilterOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -68,17 +53,6 @@ mod tests {
 
         assert_eq!(filter.field, "status");
         assert_eq!(filter.op, FilterOp::Eq);
-    }
-
-    #[test]
-    fn test_filter_op_to_sql() {
-        assert_eq!(FilterOp::Eq.to_sql(), "=");
-        assert_eq!(FilterOp::Ne.to_sql(), "!=");
-        assert_eq!(FilterOp::Gt.to_sql(), ">");
-        assert_eq!(FilterOp::Lt.to_sql(), "<");
-        assert_eq!(FilterOp::Gte.to_sql(), ">=");
-        assert_eq!(FilterOp::Lte.to_sql(), "<=");
-        assert_eq!(FilterOp::Contains.to_sql(), "LIKE");
     }
 
     #[test]

@@ -2,7 +2,7 @@ otto:
   api: 1
   tasks: [ci]
   envs:
-    VERSION: "$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')"
+    VERSION: "$(git describe --tags --match 'taskstore-v*' --always --dirty 2>/dev/null | sed 's/^taskstore-v//' || echo 'dev')"
 
 tasks:
   # Whitespace linting
@@ -16,10 +16,10 @@ tasks:
     help: "Run all quality checks (compile, clippy, format)"
     bash: |
       echo "=== Checking compilation ==="
-      cargo check --all-targets --all-features
+      cargo check --workspace --all-targets --all-features
       echo ""
       echo "=== Running Clippy ==="
-      cargo clippy --all-targets --all-features -- -D warnings
+      cargo clippy --workspace --all-targets --all-features -- -D warnings
       echo ""
       echo "=== Checking format ==="
       cargo fmt --all --check
@@ -30,7 +30,7 @@ tasks:
   test:
     help: "Run all tests"
     bash: |
-      cargo test --all-features
+      cargo test --workspace --all-features
 
   # Run all examples
   examples:
@@ -38,10 +38,10 @@ tasks:
     bash: |
       echo "=== Running TaskStore Examples ==="
       failed=0
-      for example in examples/*.rs; do
+      for example in crates/taskstore/examples/*.rs; do
         name=$(basename "$example" .rs)
         echo -n "Running $name... "
-        if cargo run --example "$name" > /dev/null 2>&1; then
+        if cargo run -p taskstore --example "$name" > /dev/null 2>&1; then
           echo "✅"
         else
           echo "❌"
@@ -67,7 +67,7 @@ tasks:
 
       # Run coverage
       TEST_FAILED=0
-      if ! cargo llvm-cov --all-features --json --output-path "$JSON_FILE" 2>&1; then
+      if ! cargo llvm-cov --workspace --all-features --json --output-path "$JSON_FILE" 2>&1; then
         TEST_FAILED=1
       fi
 
@@ -188,7 +188,7 @@ tasks:
   build:
     help: "Build release binary"
     bash: |
-      cargo build --release
+      cargo build --workspace --release
       echo "✅ Release build complete"
 
   # Clean build artifacts
@@ -202,6 +202,6 @@ tasks:
   install:
     help: "Install binary locally via cargo"
     bash: |
-      cargo install --path .
+      cargo install --path crates/taskstore
       echo "✅ Binary installed to ~/.cargo/bin"
 

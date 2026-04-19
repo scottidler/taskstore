@@ -3,7 +3,7 @@ use std::process::Command;
 
 fn main() {
     let git_describe = Command::new("git")
-        .args(["describe", "--tags", "--always"])
+        .args(["describe", "--tags", "--match", "taskstore-v*", "--always"])
         .output()
         .and_then(|output| {
             if output.status.success() {
@@ -17,7 +17,12 @@ fn main() {
             env!("CARGO_PKG_VERSION").to_string()
         });
 
+    let git_describe = match git_describe.strip_prefix("taskstore-v") {
+        Some(rest) => rest.to_string(),
+        None => git_describe,
+    };
+
     println!("cargo:rustc-env=GIT_DESCRIBE={}", git_describe);
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/");
 }
