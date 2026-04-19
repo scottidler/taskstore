@@ -3,7 +3,7 @@ name: binary-release
 on:
   push:
     tags:
-      - 'taskstore-v*'
+      - 'v*'
 
 env:
   RUST_VERSION: 1.92.0
@@ -45,11 +45,8 @@ jobs:
 
       - name: Set GIT_DESCRIBE environment variable
         run: |
-          GIT_DESCRIBE=$(git describe --tags --match 'taskstore-v*' --dirty --always | sed 's/^taskstore-v//')
+          GIT_DESCRIBE=$(git describe --tags --dirty --always)
           echo "GIT_DESCRIBE=$GIT_DESCRIBE" >> $GITHUB_ENV
-
-      - name: Strip crate prefix from tag for filename
-        run: echo "CLEAN_TAG=${GITHUB_REF_NAME#taskstore-}" >> $GITHUB_ENV
 
       - name: Set up Rust
         run: |
@@ -76,18 +73,18 @@ jobs:
           cp target/${{ matrix.target }}/release/taskstore-merge artifacts/
 
       - name: Archive artifacts
-        run: tar -czvf taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz -C artifacts taskstore taskstore-merge
+        run: tar -czvf taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz -C artifacts taskstore taskstore-merge
 
       - name: Generate checksum
-        run: sha256sum taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz > taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz.sha256
+        run: sha256sum taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz > taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: taskstore-${{ matrix.suffix }}
           path: |
-            taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz
-            taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz.sha256
+            taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz
+            taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz.sha256
 
   build-macos:
     runs-on: macos-14
@@ -106,11 +103,8 @@ jobs:
 
       - name: Set GIT_DESCRIBE environment variable
         run: |
-          GIT_DESCRIBE=$(git describe --tags --match 'taskstore-v*' --dirty --always | sed 's/^taskstore-v//')
+          GIT_DESCRIBE=$(git describe --tags --dirty --always)
           echo "GIT_DESCRIBE=$GIT_DESCRIBE" >> $GITHUB_ENV
-
-      - name: Strip crate prefix from tag for filename
-        run: echo "CLEAN_TAG=${GITHUB_REF_NAME#taskstore-}" >> $GITHUB_ENV
 
       - name: Set up Rust
         run: |
@@ -134,18 +128,18 @@ jobs:
           cp target/${{ matrix.target }}/release/taskstore-merge artifacts/
 
       - name: Archive artifacts
-        run: tar -czvf taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz -C artifacts taskstore taskstore-merge
+        run: tar -czvf taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz -C artifacts taskstore taskstore-merge
 
       - name: Generate checksum
-        run: shasum -a 256 taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz > taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz.sha256
+        run: shasum -a 256 taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz > taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: taskstore-${{ matrix.suffix }}
           path: |
-            taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz
-            taskstore-${{ env.CLEAN_TAG }}-${{ matrix.suffix }}.tar.gz.sha256
+            taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz
+            taskstore-${{ github.ref_name }}-${{ matrix.suffix }}.tar.gz.sha256
 
   create-release:
     needs: [build-linux, build-macos]

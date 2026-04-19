@@ -2,7 +2,7 @@ otto:
   api: 1
   tasks: [ci]
   envs:
-    VERSION: "$(git describe --tags --match 'taskstore-v*' --always --dirty 2>/dev/null | sed 's/^taskstore-v//' || echo 'dev')"
+    VERSION: "$(git describe --tags --always --dirty 2>/dev/null || echo 'dev')"
 
 tasks:
   # Whitespace linting
