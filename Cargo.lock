@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "taskstore"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -823,10 +823,18 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "taskstore-traits",
  "tempfile",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "taskstore-traits"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

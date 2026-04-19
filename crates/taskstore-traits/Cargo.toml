@@ -1,0 +1,10 @@
+[package]
+name = "taskstore-traits"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Record trait and filter types for taskstore; lean, I/O-free"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
