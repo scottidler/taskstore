@@ -5,6 +5,8 @@
 **Status:** Implemented
 **Review Passes Completed:** 5/5 + Architect rounds 1 & 2 (findings incorporated)
 
+> **Implementation note:** The tag scheme in this doc (`taskstore-v*` / `taskstore-traits-v*`) was not used. A single flat `v*` tag covers the whole workspace, same as before the split. `v0.3.0` is the first workspace release. `build.rs`, `.otto.yml`, and `binary-release.yml` all use plain `git describe --tags --always` with no `--match` filter and no prefix strip.
+
 ## Summary
 
 Convert `scottidler/taskstore` from a single-crate repo into a two-member Cargo workspace. Extract the `Record` trait, `IndexValue` enum, `Filter` struct, and `FilterOp` enum into a new lean crate (`taskstore-traits`) whose only dependency is `serde`. The existing `taskstore` crate continues to own `Store`, JSONL persistence, the CLI, and all heavy deps (`rusqlite`, `fs2`, `chrono`, `tracing-subscriber`), and re-exports the trait types so current consumers keep compiling unchanged.
