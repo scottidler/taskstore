@@ -656,17 +656,32 @@ impl Store {
     // Sync operations
     // ========================================================================
 
-    /// Sync SQLite database from JSONL files
+    /// Sync SQLite database from JSONL files.
     ///
-    /// After sync, call `rebuild_indexes::<T>()` for each record type to restore indexes.
+    /// Atomic: the whole operation runs inside a single `BEGIN IMMEDIATE`
+    /// transaction, so concurrent readers under WAL mode never observe an
+    /// empty or partially-populated database. On error, the entire sync
+    /// rolls back.
+    ///
+    /// Rebuilds `record_indexes` from the persistent `record_index_fields`
+    /// schema, so no separate `rebuild_indexes::<T>()` call is required after
+    /// sync for correctness. `rebuild_indexes::<T>()` remains available for
+    /// schema-evolution scenarios where a record type gained a new indexed
+    /// field since prior records were written.
     pub fn sync(&mut self) -> Result<()> {
         info!("Syncing database from JSONL files");
 
-        // Clear all tables
-        self.db.execute("DELETE FROM record_indexes", [])?;
-        self.db.execute("DELETE FROM records", [])?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        // Read all JSONL files
+        // Clear records and indexes; record_index_fields is preserved because it
+        // is schema metadata accumulated over the store's lifetime, not per-row
+        // state.
+        tx.execute("DELETE FROM record_indexes", [])?;
+        tx.execute("DELETE FROM records", [])?;
+
+        // Read all JSONL files and insert records
         for entry in fs::read_dir(&self.base_path)? {
             let entry = entry?;
             let path = entry.path();
@@ -682,19 +697,15 @@ impl Store {
 
             debug!("Syncing collection: {}", collection);
 
-            // Get file modification time for staleness tracking
             let file_mtime = fs::metadata(&path)?
                 .modified()?
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
 
-            // Read records from JSONL
             let records = jsonl::read_jsonl_latest(&path)?;
 
-            // Insert into SQLite
             for (id, record) in records {
-                // Skip tombstones
                 if record.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) {
                     continue;
                 }
@@ -702,37 +713,122 @@ impl Store {
                 let data_json = serde_json::to_string(&record)?;
                 let updated_at = record.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                self.db.execute(
+                tx.execute(
                     "INSERT OR REPLACE INTO records (collection, id, data_json, updated_at)
                      VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![collection, &id, data_json, updated_at],
                 )?;
-
-                // Note: We don't restore indexes during sync since we don't know
-                // which fields were indexed. Call rebuild_indexes<T>() after sync.
             }
 
-            // Record sync metadata for this collection
-            self.db.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO sync_metadata (collection, last_sync_time, file_mtime)
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![collection, now_ms(), file_mtime],
             )?;
         }
 
-        // Clean up orphaned sync metadata (for deleted JSONL files)
-        self.db.execute(
+        tx.execute(
             "DELETE FROM sync_metadata WHERE collection NOT IN (SELECT DISTINCT collection FROM records)",
             [],
         )?;
+
+        Self::rebuild_indexes_from_schema_tx(&tx)?;
+
+        tx.commit()?;
 
         info!("Sync complete");
         Ok(())
     }
 
-    /// Rebuild indexes for a specific record type after sync
+    /// Rebuild `record_indexes` from the stored data_json + `record_index_fields` schema.
     ///
-    /// Call this for each record type after `sync()` completes. The method:
+    /// For each (collection, field_name, field_type) tuple in `record_index_fields`,
+    /// walk every record in that collection and extract the field value from
+    /// `data_json`, inserting the typed value into `record_indexes`. Runs entirely
+    /// inside the caller's transaction.
+    fn rebuild_indexes_from_schema_tx(tx: &rusqlite::Transaction) -> Result<()> {
+        let field_specs: Vec<(String, String, String)> = {
+            let mut stmt = tx.prepare("SELECT collection, field_name, field_type FROM record_index_fields")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        for (collection, field_name, field_type) in field_specs {
+            let records_for_coll: Vec<(String, String)> = {
+                let mut stmt = tx.prepare("SELECT id, data_json FROM records WHERE collection = ?1")?;
+                let rows = stmt.query_map([&collection], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+
+            for (id, data_json) in records_for_coll {
+                let data: serde_json::Value =
+                    serde_json::from_str(&data_json).context("Failed to parse data_json during index rebuild")?;
+                let Some(field_value) = data.get(&field_name) else {
+                    continue;
+                };
+
+                match field_type.as_str() {
+                    "string" => {
+                        if let Some(s) = field_value.as_str() {
+                            tx.execute(
+                                "INSERT OR REPLACE INTO record_indexes (collection, id, field_name, field_value_str, field_value_int, field_value_bool)
+                                 VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
+                                rusqlite::params![&collection, &id, &field_name, s],
+                            )?;
+                        }
+                    }
+                    "int" => {
+                        if let Some(i) = field_value.as_i64() {
+                            tx.execute(
+                                "INSERT OR REPLACE INTO record_indexes (collection, id, field_name, field_value_str, field_value_int, field_value_bool)
+                                 VALUES (?1, ?2, ?3, NULL, ?4, NULL)",
+                                rusqlite::params![&collection, &id, &field_name, i],
+                            )?;
+                        }
+                    }
+                    "bool" => {
+                        if let Some(b) = field_value.as_bool() {
+                            tx.execute(
+                                "INSERT OR REPLACE INTO record_indexes (collection, id, field_name, field_value_str, field_value_int, field_value_bool)
+                                 VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+                                rusqlite::params![&collection, &id, &field_name, b as i64],
+                            )?;
+                        }
+                    }
+                    _ => {
+                        warn!(
+                            collection,
+                            field_name, field_type, "unknown field_type in record_index_fields"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rebuild indexes for a specific record type using its compile-time schema.
+    ///
+    /// Call this after schema evolution (for example, when a record type gains a
+    /// newly-indexed field and pre-existing records should retroactively acquire
+    /// that index). **No longer required after `sync()` for correctness**: `sync`
+    /// now rebuilds `record_indexes` from the persistent `record_index_fields`
+    /// schema. `rebuild_indexes::<T>` remains useful because it re-deserializes
+    /// each record to `T` and consults `T::indexed_fields()`, which captures
+    /// index-field definitions that may not yet be registered in
+    /// `record_index_fields` (for example, newly-added fields that have not yet
+    /// been written to any record).
+    ///
+    /// The method:
     /// - Reads all records from SQLite for the collection
     /// - Deserializes each to type T to extract `indexed_fields()`
     /// - Rebuilds the `record_indexes` table entries
@@ -1070,6 +1166,124 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 3, "should have exactly 3 field registrations, not 9");
+    }
+
+    #[test]
+    fn test_sync_rebuilds_indexes_without_generic_type() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        // Seed records so record_index_fields gets populated
+        for i in 0..3 {
+            let record = TestRecord {
+                id: format!("rec{i}"),
+                name: format!("Test {i}"),
+                status: if i % 2 == 0 { "active" } else { "inactive" }.to_string(),
+                count: i,
+                active: i % 2 == 0,
+                updated_at: now_ms(),
+            };
+            store.create(record).unwrap();
+        }
+
+        // Nuke record_indexes directly (simulating what the current git-hook
+        // `taskstore sync` used to leave behind).
+        store.db().execute("DELETE FROM record_indexes", []).unwrap();
+        let indexes_before: i64 = store
+            .db()
+            .query_row("SELECT COUNT(*) FROM record_indexes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(indexes_before, 0);
+
+        // Force staleness so sync actually runs on the JSONL corpus
+        store.db().execute("DELETE FROM sync_metadata", []).unwrap();
+
+        store.sync().unwrap();
+
+        let indexes_after: i64 = store
+            .db()
+            .query_row("SELECT COUNT(*) FROM record_indexes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            indexes_after, 9,
+            "3 records x 3 indexed fields (status, count, active) = 9 index rows"
+        );
+
+        // And filtered queries should work without a rebuild_indexes<T>() call
+        let filters = vec![Filter {
+            field: "status".to_string(),
+            op: FilterOp::Eq,
+            value: IndexValue::String("active".to_string()),
+        }];
+        let results: Vec<TestRecord> = store.list(&filters).unwrap();
+        assert_eq!(results.len(), 2, "expected 2 active records, got {}", results.len());
+    }
+
+    #[test]
+    fn test_sync_is_transactional() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_path_buf();
+        {
+            let mut store = Store::open(&path).unwrap();
+            for i in 0..20 {
+                let record = TestRecord {
+                    id: format!("rec{i}"),
+                    name: format!("Test {i}"),
+                    status: "active".to_string(),
+                    count: i,
+                    active: true,
+                    updated_at: now_ms(),
+                };
+                store.create(record).unwrap();
+            }
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+
+        let writer_path = path.clone();
+        let writer_barrier = barrier.clone();
+        let writer = thread::spawn(move || {
+            let mut store = Store::open(&writer_path).unwrap();
+            // Force staleness
+            store.db().execute("DELETE FROM sync_metadata", []).unwrap();
+            writer_barrier.wait();
+            store.sync().unwrap();
+        });
+
+        let reader_path = path.clone();
+        let reader_barrier = barrier.clone();
+        let reader = thread::spawn(move || {
+            let store = Store::open(&reader_path).unwrap();
+            reader_barrier.wait();
+            let mut observed_empty = false;
+            for _ in 0..200 {
+                let n: i64 = store
+                    .db()
+                    .query_row(
+                        "SELECT COUNT(*) FROM records WHERE collection = 'test_records'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if n == 0 {
+                    observed_empty = true;
+                    break;
+                }
+                if n != 20 {
+                    panic!("reader observed intermediate count {n}, must be 0 or 20");
+                }
+            }
+            assert!(
+                !observed_empty,
+                "reader observed an empty records table during sync; sync is not transactional"
+            );
+        });
+
+        writer.join().unwrap();
+        reader.join().unwrap();
     }
 
     #[test]
