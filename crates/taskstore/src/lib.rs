@@ -10,7 +10,7 @@ pub use taskstore_traits::{filter, record};
 // Re-export flat types for `use taskstore::Record` / `use taskstore::Filter`.
 pub use taskstore_traits::{Filter, FilterOp, IndexValue, Record};
 
-pub use store::{Store, now_ms};
+pub use store::{Store, apply_pragmas, now_ms};
 
 // Re-export rusqlite for CLI use
 pub use rusqlite;

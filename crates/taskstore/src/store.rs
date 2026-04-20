@@ -11,6 +11,30 @@ use taskstore_traits::{Filter, FilterOp, IndexValue, Record};
 use tracing::{debug, info, warn};
 
 const CURRENT_VERSION: u32 = 1;
+const BUSY_TIMEOUT_MS: i64 = 5000;
+
+/// Apply pragmas required by taskstore on a freshly-opened connection.
+///
+/// Sets `busy_timeout` for inter-process contention tolerance, enables WAL mode
+/// for concurrent-reader/single-writer semantics, and turns on foreign-key
+/// enforcement. Verifies WAL actually took (SQLite silently downgrades on
+/// filesystems that do not support it, e.g. some network mounts).
+pub fn apply_pragmas(conn: &Connection, db_path: &Path) -> Result<()> {
+    conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(eyre!(
+            "WAL mode could not be enabled on {} (got {:?}); filesystem may not support it",
+            db_path.display(),
+            mode
+        ));
+    }
+
+    conn.pragma_update(None, "foreign_keys", true)?;
+
+    Ok(())
+}
 
 fn filter_op_to_sql(op: FilterOp) -> &'static str {
     match op {
@@ -43,6 +67,8 @@ impl Store {
         // Open SQLite database
         let db_path = base_path.join("taskstore.db");
         let db = Connection::open(&db_path).context("Failed to open SQLite database")?;
+
+        apply_pragmas(&db, &db_path).context("Failed to apply SQLite pragmas")?;
 
         let mut store = Self {
             base_path: base_path.clone(),
@@ -955,6 +981,30 @@ mod tests {
         assert!(store_path.join("taskstore.db").exists());
         assert!(store_path.join(".gitignore").exists());
         assert!(store_path.join(".version").exists());
+    }
+
+    #[test]
+    fn test_store_open_enables_wal_mode() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+
+        let mode: String = store
+            .db()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "journal_mode should be wal, got {mode:?}");
+
+        let timeout: i64 = store
+            .db()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout, BUSY_TIMEOUT_MS);
+
+        let fk: i64 = store
+            .db()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
     }
 
     #[test]
