@@ -13,6 +13,9 @@ mod reader;
 mod store;
 mod writer;
 
+#[cfg(test)]
+mod tests;
+
 pub use error::Error;
 pub use options::OpenOptions;
 pub use store::AsyncStore;
