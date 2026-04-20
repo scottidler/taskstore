@@ -137,6 +137,15 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_record_indexes_field_int ON record_indexes(collection, field_name, field_value_int);
             CREATE INDEX IF NOT EXISTS idx_record_indexes_field_bool ON record_indexes(collection, field_name, field_value_bool);
 
+            -- Per-collection index field schema. Populated on every write that carries
+            -- indexed fields; read by sync() to rebuild record_indexes without a generic T.
+            CREATE TABLE IF NOT EXISTS record_index_fields (
+                collection TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                field_type TEXT NOT NULL CHECK (field_type IN ('string', 'int', 'bool')),
+                PRIMARY KEY (collection, field_name)
+            );
+
             -- Sync metadata for staleness detection
             CREATE TABLE IF NOT EXISTS sync_metadata (
                 collection TEXT PRIMARY KEY,
@@ -560,6 +569,17 @@ impl Store {
             // and cannot introduce a new failure mode when reached via create_many.
             Self::validate_field_name(field_name)?;
 
+            let field_type = match value {
+                IndexValue::String(_) => "string",
+                IndexValue::Int(_) => "int",
+                IndexValue::Bool(_) => "bool",
+            };
+            tx.execute(
+                "INSERT OR IGNORE INTO record_index_fields (collection, field_name, field_type)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![collection, field_name, field_type],
+            )?;
+
             match value {
                 IndexValue::String(s) => {
                     tx.execute(
@@ -981,6 +1001,75 @@ mod tests {
         assert!(store_path.join("taskstore.db").exists());
         assert!(store_path.join(".gitignore").exists());
         assert!(store_path.join(".version").exists());
+    }
+
+    #[test]
+    fn test_record_index_fields_populated_on_create() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        let record = TestRecord {
+            id: "rec1".to_string(),
+            name: "Test".to_string(),
+            status: "active".to_string(),
+            count: 1,
+            active: true,
+            updated_at: now_ms(),
+        };
+        store.create(record).unwrap();
+
+        let mut rows: Vec<(String, String, String)> = store
+            .db()
+            .prepare("SELECT collection, field_name, field_type FROM record_index_fields ORDER BY field_name")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        rows.sort();
+
+        assert_eq!(
+            rows,
+            vec![
+                ("test_records".to_string(), "active".to_string(), "bool".to_string()),
+                ("test_records".to_string(), "count".to_string(), "int".to_string()),
+                ("test_records".to_string(), "status".to_string(), "string".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_record_index_fields_no_duplicates_on_reinsert() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+
+        for i in 0..3 {
+            let record = TestRecord {
+                id: format!("rec{i}"),
+                name: "Test".to_string(),
+                status: "active".to_string(),
+                count: i,
+                active: true,
+                updated_at: now_ms(),
+            };
+            store.create(record).unwrap();
+        }
+
+        let count: i64 = store
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM record_index_fields WHERE collection = 'test_records'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3, "should have exactly 3 field registrations, not 9");
     }
 
     #[test]
