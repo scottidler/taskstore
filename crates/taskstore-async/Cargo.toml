@@ -7,7 +7,7 @@ license.workspace = true
 description = "Async-native wrapper over taskstore with writer thread + reader connection pool"
 
 [dependencies]
-taskstore = { path = "../taskstore", version = "0.3" }
+taskstore = { path = "../taskstore", version = "0.4" }
 taskstore-traits = { path = "../taskstore-traits", version = "0.1" }
 
 eyre = "0.6"
