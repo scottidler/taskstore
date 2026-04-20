@@ -4,7 +4,6 @@ use crate::jsonl;
 use eyre::{Context, Result, eyre};
 use fs2::FileExt;
 use rusqlite::Connection;
-use rusqlite::OptionalExtension;
 use std::fs;
 use std::path::{Path, PathBuf};
 use taskstore_traits::{Filter, FilterOp, IndexValue, Record};
@@ -34,18 +33,6 @@ pub fn apply_pragmas(conn: &Connection, db_path: &Path) -> Result<()> {
     conn.pragma_update(None, "foreign_keys", true)?;
 
     Ok(())
-}
-
-fn filter_op_to_sql(op: FilterOp) -> &'static str {
-    match op {
-        FilterOp::Eq => "=",
-        FilterOp::Ne => "!=",
-        FilterOp::Gt => ">",
-        FilterOp::Lt => "<",
-        FilterOp::Gte => ">=",
-        FilterOp::Lte => "<=",
-        FilterOp::Contains => "LIKE",
-    }
 }
 
 /// Generic persistent store with SQLite cache and JSONL source of truth
@@ -184,46 +171,7 @@ impl Store {
     /// Returns true if any JSONL file has been modified since the last sync,
     /// or if there are JSONL files that have never been synced.
     pub fn is_stale(&self) -> Result<bool> {
-        // Check each JSONL file
-        for entry in fs::read_dir(&self.base_path)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                continue;
-            }
-
-            let collection = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(c) => c,
-                None => continue,
-            };
-
-            // Get file modification time
-            let metadata = fs::metadata(&path)?;
-            let file_mtime = metadata
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-
-            // Check if we have sync metadata for this collection
-            let stored_mtime: Option<i64> = self
-                .db
-                .query_row(
-                    "SELECT file_mtime FROM sync_metadata WHERE collection = ?1",
-                    [collection],
-                    |row| row.get(0),
-                )
-                .optional()?;
-
-            match stored_mtime {
-                None => return Ok(true),                              // Never synced
-                Some(mtime) if file_mtime > mtime => return Ok(true), // File modified
-                _ => continue,
-            }
-        }
-
-        Ok(false)
+        crate::query::is_stale(&self.db, &self.base_path)
     }
 
     // ========================================================================
@@ -242,19 +190,7 @@ impl Store {
     /// Get a record by ID
     pub fn get<T: Record>(&self, id: &str) -> Result<Option<T>> {
         let collection = T::collection_name();
-
-        let mut stmt = self
-            .db
-            .prepare("SELECT data_json FROM records WHERE collection = ?1 AND id = ?2")?;
-
-        let result = stmt
-            .query_row(rusqlite::params![collection, id], |row| {
-                let json: String = row.get(0)?;
-                Ok(json)
-            })
-            .optional()?;
-
-        match result {
+        match crate::query::get_data_json(&self.db, collection, id)? {
             Some(json) => {
                 let record: T = serde_json::from_str(&json).context("Failed to deserialize record from database")?;
                 Ok(Some(record))
@@ -386,112 +322,12 @@ impl Store {
     /// List records with optional filtering
     pub fn list<T: Record>(&self, filters: &[Filter]) -> Result<Vec<T>> {
         let collection = T::collection_name();
-
-        // If no filters, return all records
-        if filters.is_empty() {
-            let mut stmt = self
-                .db
-                .prepare("SELECT data_json FROM records WHERE collection = ?1 ORDER BY updated_at DESC")?;
-
-            let rows = stmt.query_map([collection], |row| row.get::<_, String>(0))?;
-
-            let mut results = Vec::new();
-            for row_result in rows {
-                let data_json = row_result?;
-                let record: T = serde_json::from_str(&data_json).context("Failed to deserialize record")?;
-                results.push(record);
-            }
-            return Ok(results);
-        }
-
-        // With filters: query the record_indexes table
-        let mut query = String::from(
-            "SELECT DISTINCT r.data_json
-             FROM records r
-             WHERE r.collection = ?1",
-        );
-
-        for (i, filter) in filters.iter().enumerate() {
-            Self::validate_field_name(&filter.field)?;
-
-            let join_alias = format!("idx{}", i);
-            query.push_str(&format!(
-                " AND EXISTS (
-                    SELECT 1 FROM record_indexes {}
-                    WHERE {}.collection = r.collection
-                      AND {}.id = r.id
-                      AND {}.field_name = ?{}",
-                join_alias,
-                join_alias,
-                join_alias,
-                join_alias,
-                i + 2
-            ));
-
-            // Add value comparison based on type
-            match &filter.value {
-                IndexValue::String(_) => {
-                    query.push_str(&format!(
-                        " AND {}.field_value_str {} ?{}",
-                        join_alias,
-                        filter_op_to_sql(filter.op),
-                        i + 2 + filters.len()
-                    ));
-                }
-                IndexValue::Int(_) => {
-                    query.push_str(&format!(
-                        " AND {}.field_value_int {} ?{}",
-                        join_alias,
-                        filter_op_to_sql(filter.op),
-                        i + 2 + filters.len()
-                    ));
-                }
-                IndexValue::Bool(_) => {
-                    query.push_str(&format!(
-                        " AND {}.field_value_bool {} ?{}",
-                        join_alias,
-                        filter_op_to_sql(filter.op),
-                        i + 2 + filters.len()
-                    ));
-                }
-            }
-
-            query.push(')');
-        }
-
-        query.push_str(" ORDER BY r.updated_at DESC");
-
-        let mut stmt = self.db.prepare(&query)?;
-
-        // Bind parameters: collection, then field names, then values
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        params.push(Box::new(collection.to_string()));
-
-        // Field names
-        for filter in filters {
-            params.push(Box::new(filter.field.clone()));
-        }
-
-        // Values
-        for filter in filters {
-            match &filter.value {
-                IndexValue::String(s) => params.push(Box::new(s.clone())),
-                IndexValue::Int(i) => params.push(Box::new(*i)),
-                IndexValue::Bool(b) => params.push(Box::new(*b as i64)),
-            }
-        }
-
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-        let rows = stmt.query_map(params_refs.as_slice(), |row| row.get::<_, String>(0))?;
-
-        let mut results = Vec::new();
-        for row_result in rows {
-            let data_json = row_result?;
+        let rows = crate::query::list_data_jsons(&self.db, collection, filters)?;
+        let mut results = Vec::with_capacity(rows.len());
+        for data_json in rows {
             let record: T = serde_json::from_str(&data_json).context("Failed to deserialize record")?;
             results.push(record);
         }
-
         Ok(results)
     }
 
@@ -624,7 +460,7 @@ impl Store {
         Ok(())
     }
 
-    fn validate_field_name(name: &str) -> Result<()> {
+    pub(crate) fn validate_field_name(name: &str) -> Result<()> {
         if name.is_empty() {
             return Err(eyre!("Field name cannot be empty"));
         }
@@ -1892,16 +1728,5 @@ mod tests {
             assert!(retrieved.is_some(), "rec{} should be recoverable from JSONL", i);
             assert_eq!(retrieved.unwrap().name, format!("Record {}", i));
         }
-    }
-
-    #[test]
-    fn test_filter_op_to_sql() {
-        assert_eq!(filter_op_to_sql(FilterOp::Eq), "=");
-        assert_eq!(filter_op_to_sql(FilterOp::Ne), "!=");
-        assert_eq!(filter_op_to_sql(FilterOp::Gt), ">");
-        assert_eq!(filter_op_to_sql(FilterOp::Lt), "<");
-        assert_eq!(filter_op_to_sql(FilterOp::Gte), ">=");
-        assert_eq!(filter_op_to_sql(FilterOp::Lte), "<=");
-        assert_eq!(filter_op_to_sql(FilterOp::Contains), "LIKE");
     }
 }

@@ -1,6 +1,7 @@
 // TaskStore - Generic persistent state management with SQLite+JSONL+Git
 
 pub mod jsonl;
+pub mod query;
 pub mod store;
 
 // Re-export trait modules so `use taskstore::record::Record` and
