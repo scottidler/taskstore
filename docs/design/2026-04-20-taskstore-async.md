@@ -3,7 +3,7 @@
 **Author:** Scott A. Idler
 **Date:** 2026-04-20
 **Status:** Implemented
-**Review Passes Completed:** 4/5 (Draft, Correctness, Clarity, Edge Cases) + Architect round 1 (findings incorporated)
+**Review Passes Completed:** 4/5 (Draft, Correctness, Clarity, Edge Cases) + Architect round 1 (findings incorporated) + Architect round 2 (post-implementation audit, follow-up fixes landed)
 
 ## Summary
 
@@ -330,10 +330,10 @@ Each phase ends with `otto ci` green on the workspace. Phases 1a-1d all land in 
 #### Phase 3: Writer thread + command dispatch
 **Model:** opus
 
-- Define `WriteCmd` enum mirroring each mutating method (`Create`, `CreateMany`, `Update`, `Delete`, `DeleteByIndex`, `Sync`, `RebuildIndexes`, `InstallGitHooks`), each carrying its args plus a `tokio::sync::oneshot::Sender<Result<_, Error>>`.
-- Spawn dedicated OS thread in `AsyncStore::open`. Thread owns a sync `taskstore::Store`, receives `WriteCmd` from `mpsc::Receiver`, dispatches to the corresponding sync method, sends result back via oneshot.
+- ~~Define `WriteCmd` enum mirroring each mutating method (`Create`, `CreateMany`, `Update`, `Delete`, `DeleteByIndex`, `Sync`, `RebuildIndexes`, `InstallGitHooks`), each carrying its args plus a `tokio::sync::oneshot::Sender<Result<_, Error>>`.~~ **Revised during implementation:** a plain enum cannot carry a generic record type `T` across the channel without erasing `T` to a trait object, which `Record` does not support (no `dyn Record` form; `Record: Serialize + DeserializeOwned + 'static` requires `Sized`). The implementable shape is `type WriteTask = Box<dyn FnOnce(&mut taskstore::Store) + Send + 'static>`: each public `AsyncStore` method boxes a closure that captures the typed record/args and owns its own `oneshot::Sender<Result<_, Error>>`. Semantically equivalent to an enum of commands, but polymorphic over `T` at the call site where `T` is still in scope.
+- Spawn dedicated OS thread in `AsyncStore::open`. Thread owns a sync `taskstore::Store`, receives `WriteTask` boxed closures from `mpsc::Receiver`, applies each one to `&mut store`, and the closure handles its own reply via the captured `oneshot::Sender`.
 - Thread exits cleanly when `Receiver::recv` returns `None` (last `Sender` dropped).
-- `AsyncStore::close(self)`: drops the sender, `await`s a shutdown signal from the thread, joins. `Drop` impl joins synchronously.
+- `AsyncStore::close(self)`: drops the sender, joins the thread via `tokio::task::spawn_blocking` so the reactor is not blocked. `Drop` impl joins synchronously as a fallback.
 
 #### Phase 4: Reader pool
 **Model:** opus

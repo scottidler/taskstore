@@ -46,6 +46,7 @@ impl ReaderPool {
     /// Acquire a connection and run the closure inside `spawn_blocking`.
     /// The closure returns `Result<T, eyre::Report>`; this method maps it to
     /// the crate-local `Error` type.
+    #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn run<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Connection) -> eyre::Result<T> + Send + 'static,

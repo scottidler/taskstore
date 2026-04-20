@@ -48,6 +48,7 @@ impl WriterHandle {
     /// Returns `Error::StoreClosed` if the writer has shut down (either
     /// explicitly via drop or because a previous command panicked and the
     /// thread exited).
+    #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn dispatch<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&mut taskstore::Store) -> eyre::Result<T> + Send + 'static,
@@ -66,6 +67,28 @@ impl WriterHandle {
         sender.send(task).await.map_err(|_| Error::StoreClosed)?;
 
         reply_rx.await.map_err(|_| Error::StoreClosed)?
+    }
+
+    /// Async-safe shutdown: drop the sender to signal the writer thread, then
+    /// move the `JoinHandle::join` call to a blocking task so it does not
+    /// block the tokio reactor.
+    ///
+    /// Prefer this over relying on `Drop` when the store is being torn down
+    /// from async code. The Drop impl is still correct but joins synchronously
+    /// on whichever thread is dropping, which blocks a tokio worker if that
+    /// happens on the runtime.
+    pub(crate) async fn close(mut self) -> Result<()> {
+        drop(self.sender.take());
+        if let Some(thread) = self.thread.take() {
+            tokio::task::spawn_blocking(move || {
+                if let Err(panic) = thread.join() {
+                    warn!(?panic, "writer thread panicked during shutdown");
+                }
+            })
+            .await
+            .map_err(|e| Error::Other(format!("writer shutdown task panicked: {e}")))?;
+        }
+        Ok(())
     }
 }
 

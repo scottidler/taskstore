@@ -107,6 +107,26 @@ async fn test_async_write_is_serialized_under_concurrency() {
 }
 
 #[tokio::test]
+async fn test_async_close_shuts_down_cleanly() {
+    let temp = TempDir::new().expect("tempdir");
+    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+        .await
+        .expect("open");
+
+    let rec = TestRecord {
+        id: "rec1".to_string(),
+        name: "hello".to_string(),
+        status: "active".to_string(),
+        updated_at: now_ms(),
+    };
+    store.create(rec).await.expect("create");
+
+    // Explicit async close. Must not block the reactor; must drain the
+    // in-flight write and exit cleanly.
+    store.close().await.expect("close");
+}
+
+#[tokio::test]
 async fn test_async_drop_shuts_down_cleanly() {
     let temp = TempDir::new().expect("tempdir");
     let store = AsyncStore::open(temp.path(), OpenOptions::default())

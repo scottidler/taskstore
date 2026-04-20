@@ -26,6 +26,10 @@ impl AsyncStore {
     /// (to keep the tokio reactor clean). Hands ownership of that Store to the
     /// writer thread, then opens `opts.read_connections` additional independent
     /// connections for the reader pool.
+    #[tracing::instrument(level = "info", skip_all, fields(
+        read_connections = opts.read_connections,
+        writer_queue_capacity = opts.writer_queue_capacity,
+    ))]
     pub async fn open<P: AsRef<Path>>(path: P, opts: OpenOptions) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -63,30 +67,54 @@ impl AsyncStore {
         &self.base_path
     }
 
+    /// Explicit graceful shutdown: drains outstanding writes and joins the
+    /// writer thread on a blocking task so the tokio reactor is not blocked.
+    ///
+    /// `Drop` is still correct if `close` is not called - the destructor
+    /// drops the sender and synchronously joins the thread - but calling
+    /// `close` is strictly better when tearing down from async context
+    /// because it moves the join off the reactor thread.
+    #[tracing::instrument(level = "info", skip_all)]
+    pub async fn close(self) -> Result<()> {
+        let Self {
+            base_path: _,
+            writer,
+            readers,
+        } = self;
+        // Reader connections close on drop; nothing async required.
+        drop(readers);
+        writer.close().await
+    }
+
     // -- Writes (routed to writer thread) ----------------------------------
 
     /// Create a record. Returns the persisted id.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name()))]
     pub async fn create<T: Record>(&self, record: T) -> Result<String> {
         self.writer.dispatch(move |store| store.create(record)).await
     }
 
     /// Atomically create a batch of records of the same type.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name(), count = records.len()))]
     pub async fn create_many<T: Record>(&self, records: Vec<T>) -> Result<Vec<String>> {
         self.writer.dispatch(move |store| store.create_many(records)).await
     }
 
     /// Update a record (alias for create under the current semantics).
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name()))]
     pub async fn update<T: Record>(&self, record: T) -> Result<()> {
         self.writer.dispatch(move |store| store.update(record)).await
     }
 
     /// Delete a record by id.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name(), id = %id))]
     pub async fn delete<T: Record>(&self, id: &str) -> Result<()> {
         let id = id.to_string();
         self.writer.dispatch(move |store| store.delete::<T>(&id)).await
     }
 
     /// Delete all records whose indexed field matches `value`.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name(), field = %field))]
     pub async fn delete_by_index<T: Record>(&self, field: &str, value: IndexValue) -> Result<usize> {
         let field = field.to_string();
         self.writer
@@ -96,17 +124,20 @@ impl AsyncStore {
 
     /// Rebuild indexes for a specific record type (schema-evolution path;
     /// not required after `sync()` for correctness).
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name()))]
     pub async fn rebuild_indexes<T: Record>(&self) -> Result<usize> {
         self.writer.dispatch(move |store| store.rebuild_indexes::<T>()).await
     }
 
     /// Sync the SQLite cache from JSONL.
+    #[tracing::instrument(level = "info", skip_all)]
     pub async fn sync(&self) -> Result<()> {
         self.writer.dispatch(move |store| store.sync()).await
     }
 
     /// Install git hooks that keep the cache in sync with the JSONL files
     /// when git history moves.
+    #[tracing::instrument(level = "info", skip_all)]
     pub async fn install_git_hooks(&self) -> Result<()> {
         self.writer.dispatch(move |store| store.install_git_hooks()).await
     }
@@ -114,6 +145,7 @@ impl AsyncStore {
     // -- Reads (routed to reader pool) -------------------------------------
 
     /// Fetch a single record by id, or `None` if absent.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name(), id = %id))]
     pub async fn get<T: Record>(&self, id: &str) -> Result<Option<T>> {
         let collection = T::collection_name();
         let id = id.to_string();
@@ -131,6 +163,7 @@ impl AsyncStore {
     }
 
     /// List records with optional filtering. Materializes the full result set.
+    #[tracing::instrument(level = "debug", skip_all, fields(collection = T::collection_name(), filter_count = filters.len()))]
     pub async fn list<T: Record>(&self, filters: &[Filter]) -> Result<Vec<T>> {
         let collection = T::collection_name();
         let filters = filters.to_vec();
@@ -148,6 +181,7 @@ impl AsyncStore {
 
     /// Returns true if any JSONL file has been modified since the last sync,
     /// or if there are JSONL files that have never been synced.
+    #[tracing::instrument(level = "debug", skip_all)]
     pub async fn is_stale(&self) -> Result<bool> {
         let base_path = self.base_path.clone();
         self.readers
