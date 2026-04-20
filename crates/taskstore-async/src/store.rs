@@ -1,28 +1,31 @@
 // Public `AsyncStore` type.
 //
-// Owns one writer thread (dedicated OS thread holding the sync Store) and
-// eventually a reader connection pool (Phase 4). Public surface mirrors the
-// sync API; every method is `async fn` and takes `&self` because internal
-// state lives behind the writer thread and the reader pool.
+// Owns one writer thread (dedicated OS thread holding the sync Store) and a
+// bounded reader connection pool. Public surface mirrors the sync API; every
+// method is `async fn` and takes `&self` because internal state lives behind
+// the writer thread and the reader pool.
 
 use std::path::{Path, PathBuf};
 
-use taskstore_traits::{IndexValue, Record};
+use taskstore_traits::{Filter, IndexValue, Record};
 
+use crate::reader::ReaderPool;
 use crate::writer::WriterHandle;
 use crate::{Error, OpenOptions, Result};
 
 pub struct AsyncStore {
     base_path: PathBuf,
     writer: WriterHandle,
+    readers: ReaderPool,
 }
 
 impl AsyncStore {
     /// Open or create an async store at the given path.
     ///
     /// Bootstraps by opening a sync `taskstore::Store` on a dedicated thread
-    /// (to keep the tokio reactor clean), then hands ownership to the writer
-    /// thread.
+    /// (to keep the tokio reactor clean). Hands ownership of that Store to the
+    /// writer thread, then opens `opts.read_connections` additional independent
+    /// connections for the reader pool.
     pub async fn open<P: AsRef<Path>>(path: P, opts: OpenOptions) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -34,15 +37,33 @@ impl AsyncStore {
         .map_err(|e| Error::Other(format!("bootstrap task panicked: {e}")))??;
 
         let base_path = store.base_path().to_path_buf();
+        let db_path = base_path.join("taskstore.db");
+
+        // Bootstrap hands its Connection to the writer thread; open independent
+        // reader Connections separately on the same DB file.
+        let read_conns = opts.read_connections;
+        let readers = tokio::task::spawn_blocking({
+            let db_path = db_path.clone();
+            move || ReaderPool::open(db_path, read_conns)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("reader pool bootstrap task panicked: {e}")))??;
+
         let writer = WriterHandle::spawn(store, opts.writer_queue_capacity);
 
-        Ok(Self { base_path, writer })
+        Ok(Self {
+            base_path,
+            writer,
+            readers,
+        })
     }
 
     /// Path to the `.taskstore/` directory this store manages.
     pub fn base_path(&self) -> &Path {
         &self.base_path
     }
+
+    // -- Writes (routed to writer thread) ----------------------------------
 
     /// Create a record. Returns the persisted id.
     pub async fn create<T: Record>(&self, record: T) -> Result<String> {
@@ -88,5 +109,49 @@ impl AsyncStore {
     /// when git history moves.
     pub async fn install_git_hooks(&self) -> Result<()> {
         self.writer.dispatch(move |store| store.install_git_hooks()).await
+    }
+
+    // -- Reads (routed to reader pool) -------------------------------------
+
+    /// Fetch a single record by id, or `None` if absent.
+    pub async fn get<T: Record>(&self, id: &str) -> Result<Option<T>> {
+        let collection = T::collection_name();
+        let id = id.to_string();
+        let raw = self
+            .readers
+            .run(move |conn| taskstore::query::get_data_json(conn, collection, &id))
+            .await?;
+        match raw {
+            Some(json) => {
+                let record: T = serde_json::from_str(&json)?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List records with optional filtering. Materializes the full result set.
+    pub async fn list<T: Record>(&self, filters: &[Filter]) -> Result<Vec<T>> {
+        let collection = T::collection_name();
+        let filters = filters.to_vec();
+        let raws = self
+            .readers
+            .run(move |conn| taskstore::query::list_data_jsons(conn, collection, &filters))
+            .await?;
+        let mut records = Vec::with_capacity(raws.len());
+        for json in raws {
+            let record: T = serde_json::from_str(&json)?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Returns true if any JSONL file has been modified since the last sync,
+    /// or if there are JSONL files that have never been synced.
+    pub async fn is_stale(&self) -> Result<bool> {
+        let base_path = self.base_path.clone();
+        self.readers
+            .run(move |conn| taskstore::query::is_stale(conn, &base_path))
+            .await
     }
 }
