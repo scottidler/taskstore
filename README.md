@@ -18,12 +18,15 @@ TaskStore is a Rust library and CLI for managing persistent state with a unique 
 
 ## Workspace structure
 
-This repository is a two-crate Cargo workspace:
+This repository is a three-crate Cargo workspace:
 
 | Crate | Purpose | Deps |
 |-------|---------|------|
 | `taskstore-traits` | `Record` trait, `IndexValue`, `Filter`, `FilterOp` | `serde` only |
-| `taskstore` | Full storage engine, CLI, re-exports traits | `rusqlite`, `fs2`, `chrono`, etc. |
+| `taskstore` | Sync storage engine, CLI, `taskstore-merge` git driver, re-exports traits | `rusqlite`, `fs2`, `chrono`, etc. |
+| `taskstore-async` | Async-native wrapper: dedicated writer thread + reader connection pool over WAL-mode SQLite | `taskstore`, `tokio`, `thiserror` |
+
+Sync consumers (CLIs, scripts, the git merge driver) depend on `taskstore`. Async consumers (tokio-native daemons, IPC servers) depend on `taskstore-async`, which owns the concurrency shell so the calling code never needs `Arc<Mutex<Store>>` or `spawn_blocking` glue of its own.
 
 ### Depending on the lean trait surface only
 
