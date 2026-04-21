@@ -42,11 +42,23 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open or create a store at the given path
+    /// Open or create a store at `$CWD/.taskstore/`.
     ///
-    /// The store will be created in a `.taskstore` subdirectory of the given path.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let base_path = path.as_ref().join(".taskstore");
+    /// Convenience default for CLI / script callers who run from a directory
+    /// where `.taskstore/` should live. Library consumers (including
+    /// `taskstore-async`) should prefer [`Store::open_at`] so the base
+    /// directory is explicit and not dependent on process CWD.
+    pub fn open() -> Result<Self> {
+        let cwd = std::env::current_dir().context("Failed to read current working directory")?;
+        Self::open_at(cwd.join(".taskstore"))
+    }
+
+    /// Open or create a store at the exact path given.
+    ///
+    /// The path is used as-is; no `.taskstore` is appended, no repo-root
+    /// discovery happens. Parent directories are created as needed.
+    pub fn open_at<P: AsRef<Path>>(base_path: P) -> Result<Self> {
+        let base_path = base_path.as_ref().to_path_buf();
 
         // Create directory if it doesn't exist
         fs::create_dir_all(&base_path).context("Failed to create store directory")?;
@@ -927,7 +939,7 @@ mod tests {
     fn test_store_open_creates_directory() {
         let temp = TempDir::new().unwrap();
 
-        let _store = Store::open(temp.path()).unwrap();
+        let _store = Store::open_at(temp.path().join(".taskstore")).unwrap();
         let store_path = temp.path().join(".taskstore");
         assert!(store_path.exists());
         assert!(store_path.join("taskstore.db").exists());
@@ -938,7 +950,7 @@ mod tests {
     #[test]
     fn test_record_index_fields_populated_on_create() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let record = TestRecord {
             id: "rec1".to_string(),
@@ -979,7 +991,7 @@ mod tests {
     #[test]
     fn test_record_index_fields_no_duplicates_on_reinsert() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         for i in 0..3 {
             let record = TestRecord {
@@ -1007,7 +1019,7 @@ mod tests {
     #[test]
     fn test_sync_rebuilds_indexes_without_generic_type() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Seed records so record_index_fields gets populated
         for i in 0..3 {
@@ -1061,9 +1073,9 @@ mod tests {
         use std::thread;
 
         let temp = TempDir::new().unwrap();
-        let path = temp.path().to_path_buf();
+        let path = temp.path().join(".taskstore");
         {
-            let mut store = Store::open(&path).unwrap();
+            let mut store = Store::open_at(&path).unwrap();
             for i in 0..20 {
                 let record = TestRecord {
                     id: format!("rec{i}"),
@@ -1082,7 +1094,7 @@ mod tests {
         let writer_path = path.clone();
         let writer_barrier = barrier.clone();
         let writer = thread::spawn(move || {
-            let mut store = Store::open(&writer_path).unwrap();
+            let mut store = Store::open_at(&writer_path).unwrap();
             // Force staleness
             store.db().execute("DELETE FROM sync_metadata", []).unwrap();
             writer_barrier.wait();
@@ -1092,7 +1104,7 @@ mod tests {
         let reader_path = path.clone();
         let reader_barrier = barrier.clone();
         let reader = thread::spawn(move || {
-            let store = Store::open(&reader_path).unwrap();
+            let store = Store::open_at(&reader_path).unwrap();
             reader_barrier.wait();
             let mut observed_empty = false;
             for _ in 0..200 {
@@ -1125,7 +1137,7 @@ mod tests {
     #[test]
     fn test_store_open_enables_wal_mode() {
         let temp = TempDir::new().unwrap();
-        let store = Store::open(temp.path()).unwrap();
+        let store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let mode: String = store
             .db()
@@ -1149,7 +1161,7 @@ mod tests {
     #[test]
     fn test_generic_create() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let record = TestRecord {
             id: "rec1".to_string(),
@@ -1180,7 +1192,7 @@ mod tests {
     #[test]
     fn test_generic_get_nonexistent() {
         let temp = TempDir::new().unwrap();
-        let store = Store::open(temp.path()).unwrap();
+        let store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let result: Option<TestRecord> = store.get("nonexistent").unwrap();
         assert!(result.is_none());
@@ -1189,7 +1201,7 @@ mod tests {
     #[test]
     fn test_generic_update() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Create initial record
         let mut record = TestRecord {
@@ -1224,7 +1236,7 @@ mod tests {
     #[test]
     fn test_generic_delete() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Create record
         let record = TestRecord {
@@ -1253,7 +1265,7 @@ mod tests {
     #[test]
     fn test_generic_list_no_filters() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Create multiple records
         for i in 1..=3 {
@@ -1276,7 +1288,7 @@ mod tests {
     #[test]
     fn test_generic_list_with_filter() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Create records with different statuses
         let record1 = TestRecord {
@@ -1366,7 +1378,7 @@ mod tests {
     #[test]
     fn test_create_many_basic() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let records: Vec<TestRecord> = (1..=3)
             .map(|i| TestRecord {
@@ -1397,7 +1409,7 @@ mod tests {
     #[test]
     fn test_create_many_empty() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let ids = store.create_many::<TestRecord>(vec![]).unwrap();
         assert!(ids.is_empty());
@@ -1410,7 +1422,7 @@ mod tests {
     #[test]
     fn test_create_many_single() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let record = TestRecord {
             id: "rec1".to_string(),
@@ -1432,7 +1444,7 @@ mod tests {
     #[test]
     fn test_create_many_duplicate_ids() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Pre-populate to establish the JSONL file
         store
@@ -1480,7 +1492,7 @@ mod tests {
     #[test]
     fn test_create_many_invalid_id() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Pre-populate to establish the JSONL file
         store
@@ -1527,7 +1539,7 @@ mod tests {
     #[test]
     fn test_create_many_indexes() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         store
             .create_many(vec![
@@ -1583,7 +1595,7 @@ mod tests {
     #[test]
     fn test_create_many_overwrites() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // Create an initial record via create
         store
@@ -1652,7 +1664,7 @@ mod tests {
     #[test]
     fn test_create_many_jsonl_batch_write() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let records: Vec<TestRecord> = (1..=3)
             .map(|i| TestRecord {
@@ -1680,7 +1692,7 @@ mod tests {
     #[test]
     fn test_create_many_validation_before_write() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // BadFieldRecord returns a hyphenated field name which fails validate_field_name
         let result = store.create_many(vec![BadFieldRecord {
@@ -1699,7 +1711,7 @@ mod tests {
     #[test]
     fn test_create_many_jsonl_heals_sqlite() {
         let temp = TempDir::new().unwrap();
-        let mut store = Store::open(temp.path()).unwrap();
+        let mut store = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         let records: Vec<TestRecord> = (1..=3)
             .map(|i| TestRecord {
@@ -1720,7 +1732,7 @@ mod tests {
         fs::remove_file(&db_path).unwrap();
 
         // Re-open forces sync from JSONL
-        let store2 = Store::open(temp.path()).unwrap();
+        let store2 = Store::open_at(temp.path().join(".taskstore")).unwrap();
 
         // All records should be recoverable from JSONL
         for i in 1..=3 {

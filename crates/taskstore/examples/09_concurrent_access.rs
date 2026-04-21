@@ -40,16 +40,16 @@ impl Record for Counter {
 
 fn main() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
-    // Store::open auto-adds .taskstore subdir
-    let base_path = temp_dir.path().to_path_buf();
-    let store_path = temp_dir.path().join(".taskstore"); // For direct file access
+    // Use the exact `.taskstore/` path; `Store::open_at` honors it as-is.
+    let base_path = temp_dir.path().join(".taskstore");
+    let store_path = base_path.clone(); // For direct file access
 
     println!("TaskStore Concurrent Access Example");
     println!("====================================\n");
 
     // Create initial store and counter
     {
-        let mut store = Store::open(&base_path)?;
+        let mut store = Store::open_at(&base_path)?;
         store.create(Counter {
             id: "main-counter".to_string(),
             name: "Main Counter".to_string(),
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                 barrier.wait();
 
                 // Open store (each thread gets its own connection)
-                let mut store = Store::open(base_path.as_ref()).unwrap();
+                let mut store = Store::open_at(base_path.as_ref()).unwrap();
 
                 for i in 0..records_per_thread {
                     let counter = Counter {
@@ -104,7 +104,7 @@ fn main() -> Result<()> {
     // Verify all records were created
     println!("2. Verifying all records...");
     {
-        let store = Store::open(&base_path)?;
+        let store = Store::open_at(&base_path)?;
         let all_counters: Vec<Counter> = store.list(&[])?;
 
         // Should have 1 initial + (10 threads * 10 records) = 101 records
@@ -161,7 +161,7 @@ fn main() -> Result<()> {
                     // Small delay to stagger threads
                     thread::sleep(std::time::Duration::from_millis(i * 10));
 
-                    let mut store = Store::open(&path).unwrap();
+                    let mut store = Store::open_at(&path).unwrap();
 
                     // Read current value
                     let counter: Counter = store.get("main-counter").unwrap().unwrap();
@@ -186,7 +186,7 @@ fn main() -> Result<()> {
         }
 
         // Check final value
-        let store = Store::open(&base_path)?;
+        let store = Store::open_at(&base_path)?;
         let counter: Counter = store.get("main-counter")?.unwrap();
         println!("   Final counter value: {}", counter.value);
         println!("   (Note: Due to race conditions, may not be exactly 5)");

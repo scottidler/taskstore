@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     println!("Store path: {}\n", store_path.display());
 
     // Open (or create) the store
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
     println!("Store opened successfully.\n");
 
     // CREATE: Add a new note

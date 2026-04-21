@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     println!("TaskStore Multiple Collections Example");
     println!("======================================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
 
     // Create users
     println!("1. Creating users...");

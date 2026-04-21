@@ -70,8 +70,10 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Open store
-    let store = Store::open(&cli.store_path)?;
+    // Open store. CLI preserves the legacy "append .taskstore to the given
+    // path" convenience so `taskstore --store-path .` keeps meaning
+    // `./.taskstore/`, same as before the library API split.
+    let store = Store::open_at(cli.store_path.join(".taskstore"))?;
 
     match cli.command {
         Commands::Sync => {

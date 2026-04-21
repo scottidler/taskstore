@@ -135,7 +135,7 @@ fn main() -> Result<()> {
     println!("TaskStore Event Log Example");
     println!("============================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
     let mut builder = EventBuilder::new();
 
     // Simulate a series of events

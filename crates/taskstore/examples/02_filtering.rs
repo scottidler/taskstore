@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     println!("TaskStore Filtering Example");
     println!("===========================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
 
     // Create sample tasks
     println!("Creating sample tasks...\n");

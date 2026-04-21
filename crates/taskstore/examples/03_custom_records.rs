@@ -163,7 +163,7 @@ fn main() -> Result<()> {
     println!("TaskStore Custom Records Example");
     println!("=================================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
 
     // Create projects with enum status
     println!("1. Creating projects with enum status...");

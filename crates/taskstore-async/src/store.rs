@@ -31,11 +31,14 @@ impl AsyncStore {
         writer_queue_capacity = opts.writer_queue_capacity,
     ))]
     pub async fn open<P: AsRef<Path>>(path: P, opts: OpenOptions) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
+        // Phase 1 preserves the legacy `.taskstore` append behavior at the
+        // async layer; Phase 2 splits this into open() / open_at() to match
+        // the sync crate's new API.
+        let base_path = path.as_ref().join(".taskstore");
 
         let store = tokio::task::spawn_blocking({
-            let path = path.clone();
-            move || taskstore::Store::open(&path)
+            let base_path = base_path.clone();
+            move || taskstore::Store::open_at(&base_path)
         })
         .await
         .map_err(|e| Error::Other(format!("bootstrap task panicked: {e}")))??;

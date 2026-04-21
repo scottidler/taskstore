@@ -227,7 +227,7 @@ fn main() -> Result<()> {
     println!("TaskStore Relationships Example");
     println!("================================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
 
     // ========================================================================
     // One-to-Many: Teams and Members

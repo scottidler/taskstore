@@ -206,7 +206,7 @@ fn main() -> Result<()> {
     println!("TaskStore Status Workflow Example");
     println!("==================================\n");
 
-    let mut store = Store::open(&store_path)?;
+    let mut store = Store::open_at(store_path.join(".taskstore"))?;
 
     // Create some issues
     println!("1. Creating issues...");

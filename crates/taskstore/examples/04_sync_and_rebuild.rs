@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     // Phase 1: Create initial data
     println!("Phase 1: Creating initial documents...");
     {
-        let mut store = Store::open(temp_dir.path())?;
+        let mut store = Store::open_at(temp_dir.path().join(".taskstore"))?;
 
         let docs = vec![
             Document {
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
         // Give filesystem time to update mtime
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let mut store = Store::open(temp_dir.path())?;
+        let mut store = Store::open_at(temp_dir.path().join(".taskstore"))?;
 
         // Check if store detected the changes
         let all_docs: Vec<Document> = store.list(&[])?;
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     // Phase 4: Verify filtering works after rebuild
     println!("Phase 4: Verifying filters work after index rebuild...");
     {
-        let store = Store::open(temp_dir.path())?;
+        let store = Store::open_at(temp_dir.path().join(".taskstore"))?;
 
         let tutorials: Vec<Document> = store.list(&[Filter {
             field: "category".to_string(),
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
     // Phase 5: Manual sync
     println!("Phase 5: Demonstrating manual sync...");
     {
-        let mut store = Store::open(temp_dir.path())?;
+        let mut store = Store::open_at(temp_dir.path().join(".taskstore"))?;
 
         println!("   Calling store.sync() explicitly...");
         store.sync()?;
