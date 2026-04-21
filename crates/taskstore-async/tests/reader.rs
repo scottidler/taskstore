@@ -41,7 +41,7 @@ fn now_ms() -> i64 {
 
 async fn seeded_store(records: usize) -> (TempDir, AsyncStore) {
     let temp = TempDir::new().expect("tempdir");
-    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+    let store = AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
         .await
         .expect("open");
     let recs: Vec<TestRecord> = (0..records)

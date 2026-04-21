@@ -41,7 +41,7 @@ fn now_ms() -> i64 {
 #[tokio::test]
 async fn test_async_create_roundtrip() {
     let temp = TempDir::new().expect("tempdir");
-    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+    let store = AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
         .await
         .expect("open");
 
@@ -58,7 +58,7 @@ async fn test_async_create_roundtrip() {
 #[tokio::test]
 async fn test_async_create_many_preserves_order() {
     let temp = TempDir::new().expect("tempdir");
-    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+    let store = AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
         .await
         .expect("open");
 
@@ -80,7 +80,7 @@ async fn test_async_create_many_preserves_order() {
 async fn test_async_write_is_serialized_under_concurrency() {
     let temp = TempDir::new().expect("tempdir");
     let store = std::sync::Arc::new(
-        AsyncStore::open(temp.path(), OpenOptions::default())
+        AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
             .await
             .expect("open"),
     );
@@ -109,7 +109,7 @@ async fn test_async_write_is_serialized_under_concurrency() {
 #[tokio::test]
 async fn test_async_close_shuts_down_cleanly() {
     let temp = TempDir::new().expect("tempdir");
-    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+    let store = AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
         .await
         .expect("open");
 
@@ -129,7 +129,7 @@ async fn test_async_close_shuts_down_cleanly() {
 #[tokio::test]
 async fn test_async_drop_shuts_down_cleanly() {
     let temp = TempDir::new().expect("tempdir");
-    let store = AsyncStore::open(temp.path(), OpenOptions::default())
+    let store = AsyncStore::open_at(temp.path().join(".taskstore"), OpenOptions::default())
         .await
         .expect("open");
 

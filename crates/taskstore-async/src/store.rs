@@ -20,21 +20,35 @@ pub struct AsyncStore {
 }
 
 impl AsyncStore {
-    /// Open or create an async store at the given path.
+    /// Open or create an async store at `$CWD/.taskstore/`.
     ///
-    /// Bootstraps by opening a sync `taskstore::Store` on a dedicated thread
-    /// (to keep the tokio reactor clean). Hands ownership of that Store to the
-    /// writer thread, then opens `opts.read_connections` additional independent
-    /// connections for the reader pool.
+    /// Convenience wrapper over [`AsyncStore::open_at`] for callers that want
+    /// the legacy location. Daemons and library consumers that need an
+    /// explicit path should use [`AsyncStore::open_at`] directly.
     #[tracing::instrument(level = "info", skip_all, fields(
         read_connections = opts.read_connections,
         writer_queue_capacity = opts.writer_queue_capacity,
     ))]
-    pub async fn open<P: AsRef<Path>>(path: P, opts: OpenOptions) -> Result<Self> {
-        // Phase 1 preserves the legacy `.taskstore` append behavior at the
-        // async layer; Phase 2 splits this into open() / open_at() to match
-        // the sync crate's new API.
-        let base_path = path.as_ref().join(".taskstore");
+    pub async fn open(opts: OpenOptions) -> Result<Self> {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("Failed to read current working directory: {e}")))?;
+        Self::open_at(cwd.join(".taskstore"), opts).await
+    }
+
+    /// Open or create an async store at the exact path given.
+    ///
+    /// The path is used as-is; no `.taskstore` append, no auto-discovery.
+    /// Parent directories are created as needed. Bootstraps by opening a sync
+    /// `taskstore::Store` on a dedicated thread (to keep the tokio reactor
+    /// clean), hands ownership of that Store to the writer thread, then opens
+    /// `opts.read_connections` additional independent connections for the
+    /// reader pool.
+    #[tracing::instrument(level = "info", skip_all, fields(
+        read_connections = opts.read_connections,
+        writer_queue_capacity = opts.writer_queue_capacity,
+    ))]
+    pub async fn open_at<P: AsRef<Path>>(base_path: P, opts: OpenOptions) -> Result<Self> {
+        let base_path = base_path.as_ref().to_path_buf();
 
         let store = tokio::task::spawn_blocking({
             let base_path = base_path.clone();
