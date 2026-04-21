@@ -1,13 +1,13 @@
 [package]
 name = "taskstore-async"
-version = "0.1.1"
+version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Async-native wrapper over taskstore with writer thread + reader connection pool"
 
 [dependencies]
-taskstore = { path = "../taskstore", version = "0.4" }
+taskstore = { path = "../taskstore", version = "0.5" }
 taskstore-traits = { path = "../taskstore-traits", version = "0.1" }
 
 eyre = "0.6"
