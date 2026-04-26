@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "taskstore"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "clap",
@@ -816,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "taskstore-async"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rusqlite",
  "serde",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "taskstore-traits"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
 ]
