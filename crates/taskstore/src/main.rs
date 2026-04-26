@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
-use eyre::Result;
 use rusqlite::params;
 use std::path::PathBuf;
-use taskstore::{Store, rusqlite};
+use taskstore::{Result, Store, rusqlite};
 
 #[derive(Parser)]
 #[command(name = "taskstore")]

@@ -5,9 +5,9 @@
 //!
 //! Run with: cargo run --example 02_filtering
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use taskstore::Result;
 use taskstore::{Filter, FilterOp, IndexValue, Record, Store, now_ms};
 
 /// A task with multiple indexed fields for filtering

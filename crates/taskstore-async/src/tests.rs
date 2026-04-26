@@ -27,16 +27,3 @@ fn test_error_other_display() {
     let err = Error::Other("custom reason".to_string());
     assert_eq!(err.to_string(), "custom reason");
 }
-
-#[test]
-fn test_error_from_eyre_report() {
-    let report = eyre::eyre!("underlying failure").wrap_err("context");
-    let err: Error = report.into();
-    match err {
-        Error::Other(msg) => {
-            assert!(msg.contains("context"));
-            assert!(msg.contains("underlying failure"));
-        }
-        other => panic!("expected Error::Other, got {other:?}"),
-    }
-}

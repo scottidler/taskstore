@@ -2,7 +2,7 @@
 // and no generic record type. Both the sync `Store` and the async reader pool use
 // these so the SQL lives in one place.
 
-use eyre::{Context, Result};
+use crate::error::{Error, Result};
 use rusqlite::{Connection, OptionalExtension};
 use std::fs;
 use std::path::Path;
@@ -126,7 +126,7 @@ pub fn list_data_jsons(conn: &Connection, collection: &str, filters: &[Filter]) 
 /// Returns `true` if any JSONL file under `base_path` has been modified since the
 /// last recorded sync, or if there are JSONL files that have never been synced.
 pub fn is_stale(conn: &Connection, base_path: &Path) -> Result<bool> {
-    for entry in fs::read_dir(base_path).context("Failed to read store directory")? {
+    for entry in fs::read_dir(base_path).map_err(|e| Error::Other(format!("Failed to read store directory: {e}")))? {
         let entry = entry?;
         let path = entry.path();
 

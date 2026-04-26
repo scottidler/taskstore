@@ -32,7 +32,7 @@ impl ReaderPool {
         let mut connections = Vec::with_capacity(size);
         for _ in 0..size {
             let conn = Connection::open(&db_path)?;
-            taskstore::apply_pragmas(&conn, &db_path).map_err(Error::from)?;
+            taskstore::apply_pragmas(&conn, &db_path)?;
             connections.push(conn);
         }
         debug!(?db_path, size, "reader pool: opened connections");
@@ -44,12 +44,12 @@ impl ReaderPool {
     }
 
     /// Acquire a connection and run the closure inside `spawn_blocking`.
-    /// The closure returns `Result<T, eyre::Report>`; this method maps it to
-    /// the crate-local `Error` type.
+    /// The closure returns `Result<T, taskstore::Error>` (re-exported as
+    /// `crate::Result`); this method propagates that.
     #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn run<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&Connection) -> eyre::Result<T> + Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
         let permit = self
@@ -89,6 +89,5 @@ impl ReaderPool {
         handle
             .await
             .map_err(|e| Error::Other(format!("reader task panicked: {e}")))?
-            .map_err(Error::from)
     }
 }

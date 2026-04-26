@@ -1,8 +1,11 @@
 // TaskStore - Generic persistent state management with SQLite+JSONL+Git
 
+pub mod error;
 pub mod jsonl;
 pub mod query;
 pub mod store;
+
+pub use error::{Error, Result};
 
 // Re-export trait modules so `use taskstore::record::Record` and
 // `use taskstore::filter::Filter` keep resolving after the workspace split.

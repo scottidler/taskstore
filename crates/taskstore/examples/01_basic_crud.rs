@@ -5,9 +5,9 @@
 //!
 //! Run with: cargo run --example 01_basic_crud
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use taskstore::Result;
 use taskstore::{IndexValue, Record, Store, now_ms};
 
 /// A simple note record for demonstration

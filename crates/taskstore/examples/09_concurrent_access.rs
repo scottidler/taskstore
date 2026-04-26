@@ -5,11 +5,11 @@
 //!
 //! Run with: cargo run --example 09_concurrent_access
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Barrier};
 use std::thread;
+use taskstore::Result;
 use taskstore::{IndexValue, Record, Store, now_ms};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

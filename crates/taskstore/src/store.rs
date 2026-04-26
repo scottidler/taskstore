@@ -1,7 +1,7 @@
 // Generic store implementation using JSONL + SQLite
 
+use crate::error::{Error, Result};
 use crate::jsonl;
-use eyre::{Context, Result, eyre};
 use fs2::FileExt;
 use rusqlite::Connection;
 use std::fs;
@@ -23,11 +23,9 @@ pub fn apply_pragmas(conn: &Connection, db_path: &Path) -> Result<()> {
 
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if !mode.eq_ignore_ascii_case("wal") {
-        return Err(eyre!(
-            "WAL mode could not be enabled on {} (got {:?}); filesystem may not support it",
-            db_path.display(),
-            mode
-        ));
+        return Err(Error::WalUnsupported {
+            path: db_path.to_path_buf(),
+        });
     }
 
     conn.pragma_update(None, "foreign_keys", true)?;
@@ -49,7 +47,8 @@ impl Store {
     /// `taskstore-async`) should prefer [`Store::open_at`] so the base
     /// directory is explicit and not dependent on process CWD.
     pub fn open() -> Result<Self> {
-        let cwd = std::env::current_dir().context("Failed to read current working directory")?;
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("Failed to read current working directory: {e}")))?;
         Self::open_at(cwd.join(".taskstore"))
     }
 
@@ -61,13 +60,14 @@ impl Store {
         let base_path = base_path.as_ref().to_path_buf();
 
         // Create directory if it doesn't exist
-        fs::create_dir_all(&base_path).context("Failed to create store directory")?;
+        fs::create_dir_all(&base_path).map_err(|e| Error::Other(format!("Failed to create store directory: {e}")))?;
 
         // Open SQLite database
         let db_path = base_path.join("taskstore.db");
-        let db = Connection::open(&db_path).context("Failed to open SQLite database")?;
+        let db =
+            Connection::open(&db_path).map_err(|e| Error::Other(format!("Failed to open SQLite database: {e}")))?;
 
-        apply_pragmas(&db, &db_path).context("Failed to apply SQLite pragmas")?;
+        apply_pragmas(&db, &db_path).map_err(|e| Error::Other(format!("Failed to apply SQLite pragmas: {e}")))?;
 
         let mut store = Self {
             base_path: base_path.clone(),
@@ -204,7 +204,8 @@ impl Store {
         let collection = T::collection_name();
         match crate::query::get_data_json(&self.db, collection, id)? {
             Some(json) => {
-                let record: T = serde_json::from_str(&json).context("Failed to deserialize record from database")?;
+                let record: T = serde_json::from_str(&json)
+                    .map_err(|e| Error::Other(format!("Failed to deserialize record from database: {e}")))?;
                 Ok(Some(record))
             }
             None => Ok(None),
@@ -250,10 +251,11 @@ impl Store {
             let id = record.id().to_string();
             Self::validate_id(&id)?;
             if !seen.insert(id.clone()) {
-                return Err(eyre!("Duplicate ID in batch: {}", id));
+                return Err(Error::Other(format!("Duplicate ID in batch: {}", id)));
             }
 
-            let data_json = serde_json::to_string(record).context("Failed to serialize record")?;
+            let data_json =
+                serde_json::to_string(record).map_err(|e| Error::Other(format!("Failed to serialize record: {e}")))?;
 
             let fields = record.indexed_fields();
             for field_name in fields.keys() {
@@ -337,7 +339,8 @@ impl Store {
         let rows = crate::query::list_data_jsons(&self.db, collection, filters)?;
         let mut results = Vec::with_capacity(rows.len());
         for data_json in rows {
-            let record: T = serde_json::from_str(&data_json).context("Failed to deserialize record")?;
+            let record: T = serde_json::from_str(&data_json)
+                .map_err(|e| Error::Other(format!("Failed to deserialize record: {e}")))?;
             results.push(record);
         }
         Ok(results)
@@ -354,10 +357,11 @@ impl Store {
             .create(true)
             .append(true)
             .open(&jsonl_path)
-            .context("Failed to open JSONL file for appending")?;
+            .map_err(|e| Error::Other(format!("Failed to open JSONL file for appending: {e}")))?;
 
         // Acquire exclusive lock before writing
-        file.lock_exclusive().context("Failed to acquire file lock")?;
+        file.lock_exclusive()
+            .map_err(|e| Error::Other(format!("Failed to acquire file lock: {e}")))?;
 
         let json = serde_json::to_string(value)?;
 
@@ -376,9 +380,10 @@ impl Store {
             .create(true)
             .append(true)
             .open(&jsonl_path)
-            .context("Failed to open JSONL file for appending")?;
+            .map_err(|e| Error::Other(format!("Failed to open JSONL file for appending: {e}")))?;
 
-        file.lock_exclusive().context("Failed to acquire file lock")?;
+        file.lock_exclusive()
+            .map_err(|e| Error::Other(format!("Failed to acquire file lock: {e}")))?;
 
         // Build buffer from already-serialized JSON strings (pre-allocate to avoid reallocations)
         let total_len: usize = json_lines.iter().map(|s| s.len() + 1).sum();
@@ -458,29 +463,35 @@ impl Store {
 
     fn validate_collection_name(name: &str) -> Result<()> {
         if name.is_empty() {
-            return Err(eyre!("Collection name cannot be empty"));
+            return Err(Error::Other("Collection name cannot be empty".to_string()));
         }
         if name.len() > 64 {
-            return Err(eyre!("Collection name too long: {} (max 64 chars)", name));
+            return Err(Error::Other(format!(
+                "Collection name too long: {} (max 64 chars)",
+                name
+            )));
         }
         if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-            return Err(eyre!(
+            return Err(Error::Other(format!(
                 "Invalid collection name: {} (must be alphanumeric with _/-)",
                 name
-            ));
+            )));
         }
         Ok(())
     }
 
     pub(crate) fn validate_field_name(name: &str) -> Result<()> {
         if name.is_empty() {
-            return Err(eyre!("Field name cannot be empty"));
+            return Err(Error::Other("Field name cannot be empty".to_string()));
         }
         if name.len() > 64 {
-            return Err(eyre!("Field name too long: {} (max 64 chars)", name));
+            return Err(Error::Other(format!("Field name too long: {} (max 64 chars)", name)));
         }
         if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(eyre!("Invalid field name: {} (must be alphanumeric with _)", name));
+            return Err(Error::Other(format!(
+                "Invalid field name: {} (must be alphanumeric with _)",
+                name
+            )));
         }
         Ok(())
     }
@@ -489,12 +500,15 @@ impl Store {
     fn validate_id(id: &str) -> Result<()> {
         // Check not empty or whitespace-only
         if id.trim().is_empty() {
-            return Err(eyre!("Record ID cannot be empty or whitespace-only"));
+            return Err(Error::Other("Record ID cannot be empty or whitespace-only".to_string()));
         }
 
         // Check reasonable length (prevent DoS via huge IDs)
         if id.len() > 256 {
-            return Err(eyre!("Record ID too long: {} chars (max 256)", id.len()));
+            return Err(Error::Other(format!(
+                "Record ID too long: {} chars (max 256)",
+                id.len()
+            )));
         }
 
         Ok(())
@@ -541,7 +555,7 @@ impl Store {
             let collection = path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .ok_or_else(|| eyre!("Invalid JSONL filename: {:?}", path))?;
+                .ok_or_else(|| Error::Other(format!("Invalid JSONL filename: {:?}", path)))?;
 
             debug!("Syncing collection: {}", collection);
 
@@ -617,8 +631,8 @@ impl Store {
             };
 
             for (id, data_json) in records_for_coll {
-                let data: serde_json::Value =
-                    serde_json::from_str(&data_json).context("Failed to parse data_json during index rebuild")?;
+                let data: serde_json::Value = serde_json::from_str(&data_json)
+                    .map_err(|e| Error::Other(format!("Failed to parse data_json during index rebuild: {e}")))?;
                 let Some(field_value) = data.get(&field_name) else {
                     continue;
                 };
@@ -744,7 +758,7 @@ impl Store {
         let hooks_dir = git_dir.join("hooks");
 
         // Create hooks directory if it doesn't exist
-        fs::create_dir_all(&hooks_dir).context("Failed to create hooks directory")?;
+        fs::create_dir_all(&hooks_dir).map_err(|e| Error::Other(format!("Failed to create hooks directory: {e}")))?;
 
         // Install all hooks
         self.install_hook(&hooks_dir, "pre-commit", "taskstore sync")?;
@@ -774,7 +788,7 @@ impl Store {
                     let content = fs::read_to_string(&git_path)?;
                     let gitdir = content
                         .strip_prefix("gitdir: ")
-                        .ok_or_else(|| eyre!("Invalid .git file format"))?
+                        .ok_or_else(|| Error::Other("Invalid .git file format".to_string()))?
                         .trim();
                     return Ok(PathBuf::from(gitdir));
                 }
@@ -785,7 +799,7 @@ impl Store {
             }
         }
 
-        Err(eyre!("Not in a git repository"))
+        Err(Error::Other("Not in a git repository".to_string()))
     }
 
     fn install_hook(&self, hooks_dir: &Path, hook_name: &str, command: &str) -> Result<()> {
@@ -865,7 +879,7 @@ impl Store {
             .output()?;
 
         if !output.status.success() {
-            return Err(eyre!("Failed to configure merge driver name"));
+            return Err(Error::Other("Failed to configure merge driver name".to_string()));
         }
 
         let output = Command::new("git")
@@ -879,7 +893,7 @@ impl Store {
             .output()?;
 
         if !output.status.success() {
-            return Err(eyre!("Failed to configure merge driver command"));
+            return Err(Error::Other("Failed to configure merge driver command".to_string()));
         }
 
         Ok(())

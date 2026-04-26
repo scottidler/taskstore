@@ -7,9 +7,9 @@
 //!
 //! Run with: cargo run --example 08_event_log
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use taskstore::Result;
 use taskstore::{Filter, FilterOp, IndexValue, Record, Store, now_ms};
 
 // ============================================================================

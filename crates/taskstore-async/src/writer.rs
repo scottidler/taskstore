@@ -51,13 +51,13 @@ impl WriterHandle {
     #[tracing::instrument(level = "trace", skip_all)]
     pub(crate) async fn dispatch<F, T>(&self, f: F) -> Result<T>
     where
-        F: FnOnce(&mut taskstore::Store) -> eyre::Result<T> + Send + 'static,
+        F: FnOnce(&mut taskstore::Store) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
         let (reply_tx, reply_rx) = oneshot::channel::<Result<T>>();
 
         let task: WriteTask = Box::new(move |store| {
-            let outcome = f(store).map_err(Error::from);
+            let outcome = f(store);
             // Ignore send errors: if the receiver is gone, the caller's future
             // was dropped before it could await the result. Nothing to do.
             let _ = reply_tx.send(outcome);

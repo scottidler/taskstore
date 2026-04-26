@@ -1,6 +1,6 @@
 // JSONL file operations
 
-use eyre::{Context, Result};
+use crate::error::{Error, Result};
 use fs2::FileExt;
 use serde::Serialize;
 use serde_json::Value;
@@ -16,10 +16,11 @@ pub fn append_jsonl<T: Serialize>(path: &Path, record: &T) -> Result<()> {
         .create(true)
         .append(true)
         .open(path)
-        .context("Failed to open JSONL file for appending")?;
+        .map_err(|e| Error::Other(format!("Failed to open JSONL file for appending: {e}")))?;
 
     // Acquire exclusive lock before writing
-    file.lock_exclusive().context("Failed to acquire file lock")?;
+    file.lock_exclusive()
+        .map_err(|e| Error::Other(format!("Failed to acquire file lock: {e}")))?;
 
     let json = serde_json::to_string(record)?;
     writeln!(file, "{}", json)?;
@@ -39,10 +40,11 @@ pub fn read_jsonl_latest(path: &Path) -> Result<HashMap<String, Value>> {
         return Ok(HashMap::new());
     }
 
-    let file = File::open(path).context("Failed to open JSONL file")?;
+    let file = File::open(path).map_err(|e| Error::Other(format!("Failed to open JSONL file: {e}")))?;
 
     // Acquire shared lock to allow concurrent reads while blocking writes
-    file.lock_shared().context("Failed to acquire shared file lock")?;
+    file.lock_shared()
+        .map_err(|e| Error::Other(format!("Failed to acquire shared file lock: {e}")))?;
 
     let reader = BufReader::new(file);
     let mut records: HashMap<String, Value> = HashMap::new();

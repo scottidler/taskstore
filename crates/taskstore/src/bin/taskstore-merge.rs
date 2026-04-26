@@ -8,7 +8,6 @@
 //   1 = conflict (manual resolution required)
 //   2 = error
 
-use eyre::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
@@ -16,6 +15,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process;
+use taskstore::{Error, Result};
 
 fn main() {
     if let Err(e) = run() {
@@ -185,17 +185,18 @@ fn parse_jsonl(path: &str) -> Result<Vec<Value>> {
         return Ok(Vec::new());
     }
 
-    let file = File::open(path).context("Failed to open JSONL file")?;
+    let file = File::open(path).map_err(|e| Error::Other(format!("Failed to open JSONL file: {e}")))?;
     let reader = BufReader::new(file);
     let mut records = Vec::new();
 
     for line in reader.lines() {
-        let line = line.context("Failed to read line")?;
+        let line = line.map_err(|e| Error::Other(format!("Failed to read line: {e}")))?;
         if line.trim().is_empty() {
             continue;
         }
 
-        let value: Value = serde_json::from_str(&line).context("Failed to parse JSON line")?;
+        let value: Value =
+            serde_json::from_str(&line).map_err(|e| Error::Other(format!("Failed to parse JSON line: {e}")))?;
         records.push(value);
     }
 

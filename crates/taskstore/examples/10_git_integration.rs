@@ -9,10 +9,10 @@
 //!
 //! Note: This example works best when run in an actual git repository.
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
+use taskstore::Result;
 use taskstore::{IndexValue, Record, Store, now_ms};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

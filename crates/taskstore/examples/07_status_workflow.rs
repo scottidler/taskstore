@@ -5,10 +5,9 @@
 //!
 //! Run with: cargo run --example 07_status_workflow
 
-use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use taskstore::{Filter, FilterOp, IndexValue, Record, Store, now_ms};
+use taskstore::{Error, Filter, FilterOp, IndexValue, Record, Result, Store, now_ms};
 
 // ============================================================================
 // Issue Tracker with Status Workflow
@@ -141,12 +140,12 @@ impl Issue {
     /// Transition to a new status with validation
     fn transition(&mut self, new_status: IssueStatus) -> Result<()> {
         if !self.status.can_transition_to(new_status) {
-            return Err(eyre!(
+            return Err(Error::Other(format!(
                 "Invalid transition: {:?} -> {:?}. Valid targets: {:?}",
                 self.status,
                 new_status,
                 self.status.valid_transitions()
-            ));
+            )));
         }
         self.status = new_status;
         self.updated_at = now_ms();
@@ -161,7 +160,7 @@ impl Issue {
 fn start_work(store: &mut Store, issue_id: &str, assignee: &str) -> Result<()> {
     let mut issue: Issue = store
         .get(issue_id)?
-        .ok_or_else(|| eyre!("Issue not found: {}", issue_id))?;
+        .ok_or_else(|| Error::Other(format!("Issue not found: {}", issue_id)))?;
 
     issue.transition(IssueStatus::InProgress)?;
     issue.assignee = Some(assignee.to_string());
@@ -172,7 +171,7 @@ fn start_work(store: &mut Store, issue_id: &str, assignee: &str) -> Result<()> {
 fn submit_for_review(store: &mut Store, issue_id: &str) -> Result<()> {
     let mut issue: Issue = store
         .get(issue_id)?
-        .ok_or_else(|| eyre!("Issue not found: {}", issue_id))?;
+        .ok_or_else(|| Error::Other(format!("Issue not found: {}", issue_id)))?;
 
     issue.transition(IssueStatus::InReview)?;
     store.update(issue)?;
@@ -182,7 +181,7 @@ fn submit_for_review(store: &mut Store, issue_id: &str) -> Result<()> {
 fn approve_review(store: &mut Store, issue_id: &str) -> Result<()> {
     let mut issue: Issue = store
         .get(issue_id)?
-        .ok_or_else(|| eyre!("Issue not found: {}", issue_id))?;
+        .ok_or_else(|| Error::Other(format!("Issue not found: {}", issue_id)))?;
 
     issue.transition(IssueStatus::Resolved)?;
     store.update(issue)?;
@@ -192,7 +191,7 @@ fn approve_review(store: &mut Store, issue_id: &str) -> Result<()> {
 fn close_issue(store: &mut Store, issue_id: &str) -> Result<()> {
     let mut issue: Issue = store
         .get(issue_id)?
-        .ok_or_else(|| eyre!("Issue not found: {}", issue_id))?;
+        .ok_or_else(|| Error::Other(format!("Issue not found: {}", issue_id)))?;
 
     issue.transition(IssueStatus::Closed)?;
     store.update(issue)?;

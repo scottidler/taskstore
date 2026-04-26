@@ -7,11 +7,11 @@
 //!
 //! Run with: cargo run --example 04_sync_and_rebuild
 
-use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
+use taskstore::Result;
 use taskstore::{Filter, FilterOp, IndexValue, Record, Store};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
