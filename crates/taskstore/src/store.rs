@@ -346,6 +346,20 @@ impl Store {
         Ok(results)
     }
 
+    /// Corruption-aware bulk read.
+    ///
+    /// Reads JSONL directly (bypasses SQLite), applies tombstone filtering and
+    /// `match_filter` in Rust, and returns every line that could not be turned
+    /// into a usable record as a `CorruptionEntry`.
+    ///
+    /// Re-parses JSONL on every call. **Not a hot read**: prefer
+    /// [`Store::list`] for frequent queries and reserve `list_tolerant` for
+    /// audit / sweep paths. Does not trigger `sync()` and does not write to
+    /// SQLite.
+    pub fn list_tolerant<T: Record>(&self, filters: &[Filter]) -> Result<taskstore_traits::ListResult<T>> {
+        crate::corruption::list_tolerant_at(&self.base_path, filters)
+    }
+
     // ========================================================================
     // Helper methods
     // ========================================================================
@@ -908,6 +922,9 @@ pub fn now_ms() -> i64 {
         .expect("System time before Unix epoch")
         .as_millis() as i64
 }
+
+#[cfg(test)]
+mod list_tolerant_tests;
 
 #[cfg(test)]
 mod tests {

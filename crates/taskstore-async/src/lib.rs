@@ -26,3 +26,7 @@ pub use taskstore::{Error, Result};
 // Convenience re-exports so consumers can `use taskstore_async::{Record, Filter}`
 // without pulling taskstore-traits directly.
 pub use taskstore_traits::{Filter, FilterOp, IndexValue, Record};
+
+// Re-export the corruption-aware types so consumers of the async surface can
+// name `taskstore_async::ListResult`, etc., directly.
+pub use taskstore_traits::{Category, CorruptionEntry, CorruptionError, ListResult, match_filter};

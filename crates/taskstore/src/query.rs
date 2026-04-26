@@ -108,7 +108,18 @@ pub fn list_data_jsons(conn: &Connection, collection: &str, filters: &[Filter]) 
     }
     for filter in filters {
         match &filter.value {
-            IndexValue::String(s) => params.push(Box::new(s.clone())),
+            IndexValue::String(s) => {
+                // FilterOp::Contains compiles to SQL `LIKE`. SQLite `LIKE 'foo'`
+                // with no wildcards is equivalent to ASCII-case-insensitive equality;
+                // for substring matching (which is the documented intent of Contains),
+                // the bound parameter must be wrapped with `%` on both sides.
+                let bind = if matches!(filter.op, FilterOp::Contains) {
+                    format!("%{}%", s)
+                } else {
+                    s.clone()
+                };
+                params.push(Box::new(bind));
+            }
             IndexValue::Int(i) => params.push(Box::new(*i)),
             IndexValue::Bool(b) => params.push(Box::new(*b as i64)),
         }

@@ -2,7 +2,7 @@
 
 **Author:** Scott Idler
 **Date:** 2026-04-25
-**Status:** Draft
+**Status:** Implemented
 **Replaces:** earlier 2026-04-25 draft written against taskstore v0.2.2 (pre-workspace-split). That draft is superseded by this document; do not implement against it.
 
 ## Summary

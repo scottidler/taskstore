@@ -196,6 +196,25 @@ impl AsyncStore {
         Ok(records)
     }
 
+    /// Corruption-aware bulk read.
+    ///
+    /// Dispatches the JSONL parse to `tokio::task::spawn_blocking` directly,
+    /// bypassing both the writer thread (no need to serialize behind writes)
+    /// and the reader pool (no SQLite connection needed). The shared `fs2`
+    /// lock taken inside `read_jsonl_latest_with_corruption` is the same one
+    /// today's `sync()` uses, so concurrent JSONL reads across tasks are safe.
+    #[tracing::instrument(level = "debug", skip_all, fields(
+        collection = T::collection_name(),
+        filter_count = filters.len(),
+    ))]
+    pub async fn list_tolerant<T: Record>(&self, filters: &[Filter]) -> Result<taskstore_traits::ListResult<T>> {
+        let base_path = self.base_path.clone();
+        let filters = filters.to_vec();
+        tokio::task::spawn_blocking(move || taskstore::list_tolerant_at::<T>(&base_path, &filters))
+            .await
+            .map_err(|e| Error::Other(format!("list_tolerant task panicked: {e}")))?
+    }
+
     /// Returns true if any JSONL file has been modified since the last sync,
     /// or if there are JSONL files that have never been synced.
     #[tracing::instrument(level = "debug", skip_all)]
