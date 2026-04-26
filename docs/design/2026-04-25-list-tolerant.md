@@ -221,10 +221,23 @@ use std::path::PathBuf;
 /// `records` is the live record set after last-write-wins-per-id and tombstone
 /// filtering. `corruption` lists every line that could not be turned into a
 /// usable record, with file/line attribution.
+///
+/// Marked `#[non_exhaustive]` so future fields (e.g., an `omitted_count: u64`
+/// for a capped-corruption mode - see Open Questions Q1) can be added without
+/// a breaking change. Construct via `ListResult::new` rather than struct
+/// literal; cross-crate callers (including `taskstore::list_tolerant_at`)
+/// cannot use literal-construction on a `#[non_exhaustive]` type.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ListResult<T> {
     pub records: Vec<T>,
     pub corruption: Vec<CorruptionEntry>,
+}
+
+impl<T> ListResult<T> {
+    pub fn new(records: Vec<T>, corruption: Vec<CorruptionEntry>) -> Self {
+        Self { records, corruption }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,10 +246,14 @@ pub struct CorruptionEntry {
     /// 1-indexed line number within the JSONL file.
     pub line: u64,
     /// Original line bytes (`String::from_utf8_lossy` for non-UTF-8),
-    /// truncated to 4 KB with the literal "...[truncated]" appended when
-    /// the original exceeded that size. For TypeMismatch entries, this is
-    /// the parsed `serde_json::Value` re-serialized; the original line text
-    /// is no longer in scope at type-deserialization time.
+    /// truncated at a UTF-8 char boundary at or below 4096 bytes (using
+    /// `str::floor_char_boundary`, stable since Rust 1.80) with the literal
+    /// "...[truncated]" appended when the original exceeded that size.
+    /// Naive byte slicing (`&s[..4096]`) panics on multi-byte boundaries
+    /// and is explicitly forbidden in the truncation helper.
+    /// For TypeMismatch entries, this is the parsed `serde_json::Value`
+    /// re-serialized; the original line text is no longer in scope at
+    /// type-deserialization time.
     pub raw: String,
     pub error: CorruptionError,
 }
@@ -328,29 +345,44 @@ Test contract pins SQL-vs-Rust parity for every `FilterOp` variant on every `Ind
 ```rust
 struct ParsedLine {
     line_no: u64,
-    raw: String,                              // original bytes, lossy UTF-8
+    raw: String,                              // original bytes, lossy UTF-8 (truncated)
     outcome: Result<(String, Value), CorruptionError>,  // (id, value) or per-line error
 }
 
-fn iter_jsonl(path: &Path) -> Result<Vec<ParsedLine>> { /* ... */ }
+/// Streaming helper. Opens `path` under a shared `fs2` lock, then calls
+/// `for_each(parsed)` once per non-empty line. The callback receives an
+/// owned `ParsedLine` and decides what to keep; the value is dropped when
+/// the callback returns. **The helper never materializes a `Vec<ParsedLine>`** -
+/// both wrappers stream-reduce inside the callback so peak memory is
+/// proportional to unique records, not total lines.
+fn for_each_jsonl_line<F>(path: &Path, for_each: F) -> Result<()>
+where
+    F: FnMut(ParsedLine);
 ```
 
-Both wrappers consume the helper:
+Both wrappers consume the streaming helper. Their public signatures are unchanged from today's `read_jsonl_latest` plus one new entry point:
 
 ```rust
 /// Today's behavior. sync() and any other caller that does not care about
 /// corruption keeps using this. Public signature unchanged. Implementation
-/// is now: call iter_jsonl, warn-and-discard the Err arm, dedup by id.
+/// is now: call `for_each_jsonl_line`, warn-log on `outcome.is_err()` in
+/// the callback, otherwise stream-reduce into HashMap<String, Value> with
+/// LWW-by-updated_at. Obsolete Values are overwritten in place; the
+/// `ParsedLine` falls out of scope each iteration.
 pub fn read_jsonl_latest(path: &Path) -> Result<HashMap<String, Value>>;
 
-/// New entrypoint. Returns the dedup map plus the entries that would
-/// otherwise have been warn-logged. Each map value carries the line number
-/// of the LWW-winning line so downstream typed deserialization can attribute
-/// a TypeMismatch back to a specific line.
+/// New entrypoint. Same streaming reduction, but the callback also pushes
+/// CorruptionEntry into the corruption Vec on the Err arm and carries
+/// `line_no` alongside the LWW-winning Value. Memory grows only with K
+/// (corrupt lines), not with total writes. Each map value carries the
+/// line number of the LWW-winning line so downstream typed deserialization
+/// can attribute a TypeMismatch back to a specific line.
 pub fn read_jsonl_latest_with_corruption(
     path: &Path,
 ) -> Result<(HashMap<String, (u64, Value)>, Vec<CorruptionEntry>)>;
 ```
+
+**Architect-flagged failure mode (avoided by the closure contract):** an earlier draft of this design had `for_each_jsonl_line` return `Vec<ParsedLine>`. That would have introduced an O(total-lines-including-superseded-versions) memory regression in `sync()`'s hot path - dramatically worse than today's O(unique-records) profile. The streaming closure shape is non-negotiable for that reason.
 
 The line-number-bearing return type is unique to the with-corruption variant. `read_jsonl_latest`'s existing signature is preserved; `sync()` does not learn about line numbers and pays no extra memory cost. The 8 bytes-per-record overhead is paid only by `list_tolerant` callers.
 
@@ -396,11 +428,23 @@ pub fn list_tolerant_at<T: Record>(base_path: &Path, filters: &[Filter]) -> Resu
         }
     }
 
-    Ok(ListResult { records, corruption })
+    Ok(ListResult::new(records, corruption))
 }
 ```
 
-`truncate_for_raw` is a small helper (defined alongside) that truncates to 4 KB and appends `"...[truncated]"` if the input was longer. Used by both the JSONL helper (for original line text) and the type-mismatch path (for the re-serialized Value).
+`truncate_for_raw` truncates at a UTF-8 char boundary at or below 4096 bytes and appends `"...[truncated]"` if the input exceeded that size. Implementation:
+
+```rust
+fn truncate_for_raw(s: &str) -> String {
+    if s.len() <= 4096 {
+        return s.to_string();
+    }
+    let cut = s.floor_char_boundary(4096);
+    format!("{}...[truncated]", &s[..cut])
+}
+```
+
+Used by both the JSONL helper (for original line text) and the type-mismatch path (for the re-serialized Value). Naive byte slicing (`&s[..4096]`) panics when the 4096th byte falls inside a multi-byte UTF-8 scalar value (e.g., a line padded with emoji or Cyrillic) and is explicitly forbidden.
 
 ### Phase 2 acceptance
 
@@ -480,7 +524,7 @@ pub use taskstore_traits::{Category, CorruptionEntry, CorruptionError, ListResul
 | Unreadable JSONL (perms, FS error on file open) | `Err(Error::Io(...))`. No `ListResult`. File-open failures are not per-line; they propagate as the outer error. |
 | `updated_at` missing or non-int on otherwise valid line | Existing default-to-0 behavior preserved. Not corruption. |
 | Line bytes are not valid UTF-8 | Treated as `InvalidJson` (parse fails on invalid UTF-8). `raw` populated via `String::from_utf8_lossy`. |
-| Tombstone line that fails JSON parse | `InvalidJson` corruption. The id it was meant to tombstone is unknown, so the prior live record (if any) stays in `records`. Documented consequence: a corrupt tombstone leaves the target record alive. |
+| Tombstone line that fails JSON parse | `InvalidJson` corruption. The id it was meant to tombstone is unknown, so the prior live record (if any) stays in `records`. **This is identical to today's `sync()` behavior** - a corrupt tombstone never made it into SQLite either, so today's `list<T>` already returns the un-tombstoned record with no diagnostic. The improvement here is *visibility*: `list_tolerant` exposes the failed tombstone as a `CorruptionEntry`, where today the same scenario silently leaves the record alive. Auditors who see a corrupt tombstone for an id they expected to be deleted should remediate (rewrite the tombstone, run compaction); they should not assume the record is intentionally alive. |
 | Filter references field absent from `T::indexed_fields()` | `match_filter` returns false. Mirrors SQL `EXISTS` semantics. |
 | Filter `value` type does not match indexed field's `IndexValue` variant | `match_filter` returns false. Mirrors SQL path's per-column typing. |
 | Filter op is `Contains` | ASCII-case-insensitive substring match (lowercase both sides, then `str::contains`). Identical filter returns identical record set via `list<T>` (SQLite `LIKE`) and `list_tolerant<T>` (`match_filter`). |
@@ -535,6 +579,7 @@ In `taskstore/src/store/tests.rs` (or a new `store_list_tolerant.rs` module):
 - `list_tolerant_tombstones_filtered_not_counted`: 100 lines including 5 well-formed tombstones; tombstones absent from `records`, absent from `corruption`.
 - `list_tolerant_corrupt_tombstone_leaves_target_alive`: write a valid record then a tombstone-shaped line that fails to parse; `corruption` contains 1 entry, `records` still contains the original record.
 - `list_tolerant_raw_truncation_marker`: write a >4 KB malformed line; `corruption[0].raw.ends_with("...[truncated]")` and `raw.len() <= 4096 + "...[truncated]".len()`.
+- `list_tolerant_raw_truncation_multibyte_no_panic`: write a malformed line whose 4096th byte falls inside a multi-byte UTF-8 scalar (e.g. emoji-padded line so byte 4096 lands mid-codepoint); `truncate_for_raw` must not panic and must return a valid UTF-8 String. This is the regression test for the architect-flagged truncation pitfall.
 - `list_tolerant_after_sync_list_returns_silent_skip`: same corrupted JSONL; run `sync()`, then `list<T>` returns `Ok(records_present)` (existing silent-skip preserved). Corruption signal is unique to `list_tolerant`.
 
 In `taskstore-async/tests/`:
@@ -568,7 +613,7 @@ Round-trip tests use `tempfile::TempDir` and the public `Store::open_at` / `Asyn
 2. Re-export from `crates/taskstore-traits/src/lib.rs`.
 3. Add `taskstore-traits = { path = "../taskstore-traits" }` is already present; no Cargo.toml change.
 4. Add `pub(crate) fn category_from_serde_json` in `crates/taskstore/src/error.rs`. (Not a `From` impl - orphan rule forbids it; see the type-definition section.)
-5. Refactor `crates/taskstore/src/jsonl.rs`: extract the parse-and-dedup loop into a private helper that yields `ParsedLine` records. `read_jsonl_latest` becomes a thin wrapper that warn-logs and discards the Err arm. Add `read_jsonl_latest_with_corruption`.
+5. Refactor `crates/taskstore/src/jsonl.rs`: extract the parse loop into a private streaming helper `for_each_jsonl_line<F: FnMut(ParsedLine)>`. `read_jsonl_latest` becomes a thin wrapper whose callback warn-logs and discards the Err arm and stream-reduces into `HashMap<String, Value>`. Add `read_jsonl_latest_with_corruption`, whose callback stream-reduces into `HashMap<String, (u64, Value)>` and pushes Err entries into a `Vec<CorruptionEntry>`. **Neither variant ever materializes a `Vec<ParsedLine>`** - that shape would regress `sync()`'s memory profile and is forbidden.
 6. Add `crates/taskstore/src/corruption.rs` with `list_tolerant_at<T>` and `truncate_for_raw`.
 7. Re-export `taskstore_traits::{Category, CorruptionEntry, CorruptionError, ListResult, match_filter}` from `crates/taskstore/src/lib.rs`.
 8. Add Phase 2 tests (filter parity, JSONL helper variants).
@@ -623,9 +668,9 @@ Land `list_tolerant` on `eyre::Result<ListResult<T>>` in sync, async-Error in as
 
 `taskstore::Error` (no `StoreClosed`), `taskstore_async::AsyncError` wrapping it with the channel-closed variant.
 
-- **Pros:** Sync code is statically prevented from constructing `StoreClosed`.
-- **Cons:** Two error types, two `Result` aliases, a `From<taskstore::Error> for taskstore_async::AsyncError` shim everywhere. Twice the type surface for a minor correctness gain.
-- **Why not chosen:** One enum, document `StoreClosed` as async-only. Revisit if the overlap proves too smelly in practice.
+- **Pros:** Sync code is statically prevented from constructing `StoreClosed`. Domain isolation: each crate's error type carries only the failure modes that crate produces.
+- **Cons:** Every consumer that touches both `Store` and `AsyncStore` (Loopr, the eventual driver of this work) ends up with **two** error types in flight. They either define their own consumer-side wrapping enum (`enum LooprError { Sync(taskstore::Error), Async(taskstore_async::AsyncError) }` plus matching `From` impls) or duplicate match arms wherever they handle errors from both surfaces. Both options push complexity outward, off taskstore and onto every consumer. The "domain isolation" win is internal aesthetic; the cost is paid by everyone downstream. Additionally, a `From<taskstore::Error> for taskstore_async::AsyncError` shim is needed at every async->sync boundary inside `taskstore-async` itself - the writer thread, the reader pool, every method on `AsyncStore` that delegates to the sync `Store`.
+- **Why not chosen:** One enum optimizes for the consumer surface. `StoreClosed`'s presence in sync code is documented and not exposed via any sync return path that would surprise a sync-only caller (sync APIs that internally never produce it cannot be coerced into producing it). If a future audit shows the unified enum causes real consumer confusion, the split can be done as a follow-up; this design defers A6 on consumer-ergonomics grounds rather than foreclosing it.
 
 ## Technical Considerations
 
@@ -668,18 +713,33 @@ Single coordinated breaking-change release: `taskstore 0.6.0` and `taskstore-asy
 | Phase 1 missing a `.context(...)` site loses operational message | Medium | Low | Migration is mechanical; CI grep for `eyre`/`.context`/`.wrap_err` after Phase 1 must return nothing in the workspace |
 | `Error::Other(String)` becomes the lazy default for new error sites | Medium | Low | New error sites should add typed variants when the failure shape is meaningful; `Other(String)` is for context messages, not for skipping the type design |
 | Async `list_tolerant` panics in `spawn_blocking` produce confusing errors | Low | Low | Surface as `Error::Other("list_tolerant task panicked: {e}")`; consistent with existing `AsyncStore::open_at` panic mapping |
+| Auditor misinterprets a corrupt tombstone as live-by-design | Low | Medium | Document explicitly on the tombstone behavior row that a `CorruptionError::InvalidJson` whose contents were *meant* to be a tombstone leaves the target record in `records`; auditors should remediate (rewrite the tombstone), not assume the record is intentionally alive |
+| `list_tolerant` parse holds shared `fs2` lock long enough to delay writes on the same collection | Medium | Low | Same lock shape as today's `read_jsonl_latest` (called by `sync()`); `list_tolerant` adds a new caller of an existing pattern, not a new pattern. Documented as audit/sweep, not hot read. Future mitigation if needed: chunked parse with periodic lock release |
 
 ## Open Questions
 
-None. Decisions made in dialogue and codified above:
+### Q1: Should the corruption Vec be capped?
+
+The current design returns every `CorruptionEntry` produced during the parse - the Vec is unbounded. Architect review surfaced the failure mode: a long-running daemon that, over time, has written a large number of malformed lines to one collection produces a `list_tolerant` call that loads every one of them into memory in a single audit pass.
+
+Two options:
+
+- **(a) Keep unbounded.** Match the framing: `list_tolerant` is an audit/sweep tool, not a hot path; if you have millions of corrupt lines, the bigger problem is the JSONL itself. Document the memory shape on the method.
+- **(b) Cap at N entries with `omitted_count: u64` field on `ListResult`.** Add a module-level `LIST_TOLERANT_MAX_CORRUPTION_ENTRIES: usize = 10_000`; once reached, stop pushing entries and increment the counter. Caller can re-run focused audits if needed.
+
+Recommendation: ship v0.6.0 with **(a)**, revisit if the unbounded shape causes a real incident. **(b)** is additive and can be introduced later by adding a field to `ListResult` (backwards-compatible if `ListResult` is annotated `#[non_exhaustive]` from day one - which this design specifies in the type definition section as a low-cost safeguard against this exact future change).
+
+### Decisions already made (recorded for reference)
 
 - Error type: `taskstore::Error` (single enum, async-only `StoreClosed` variant documented).
 - File: `crates/taskstore/src/error.rs`.
 - Drop `eyre` from both `taskstore` and `taskstore-async`.
 - Corruption types and `match_filter`: `taskstore-traits`.
-- `From<serde_json::error::Category> for Category`: in `taskstore` (where serde_json is a dep).
+- `From<serde_json::error::Category> for Category`: free function in `taskstore` (orphan rule forbids the impl).
 - Phase order: error unification first (Phase 1), corruption types second (Phase 2), public methods third (Phase 3).
 - Async dispatch: `tokio::task::spawn_blocking` directly, not reader pool, not writer thread.
+- JSONL parse helper is streaming (closure-based), never returns a `Vec<ParsedLine>` - protects `sync()`'s memory profile.
+- `truncate_for_raw` uses `floor_char_boundary`, not byte slicing - no UTF-8 panics.
 
 ## References
 
