@@ -16,7 +16,7 @@ name = "taskstore"
 path = "src/main.rs"
 
 [dependencies]
-taskstore-traits = { path = "../taskstore-traits", version = "0.2" }
+taskstore-traits = { path = "../taskstore-traits", version = "0.6" }
 
 chrono = "0.4"
 clap = { version = "4.5.54", features = ["derive"] }
