@@ -1,6 +1,6 @@
 [package]
 name = "taskstore"
-version = "0.6.1"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -16,7 +16,7 @@ name = "taskstore"
 path = "src/main.rs"
 
 [dependencies]
-taskstore-traits = { path = "../taskstore-traits", version = "0.6" }
+taskstore-traits.workspace = true
 
 chrono = "0.4"
 clap = { version = "4.5.54", features = ["derive"] }

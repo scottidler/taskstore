@@ -7,3 +7,7 @@ edition = "2024"
 authors = ["Scott A. Idler <scott.a.idler@gmail.com>"]
 license = "MIT"
 version = "0.6.2"
+
+[workspace.dependencies]
+taskstore = { path = "crates/taskstore" }
+taskstore-traits = { path = "crates/taskstore-traits" }
