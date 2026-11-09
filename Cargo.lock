@@ -89,6 +89,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "build-version"
+version = "0.1.0"
+source = "git+https://github.com/tatari-tv/build-version-rs?tag=v0.1.0#06411938a54d50b035784b4bb6d9ffb9a187acc7"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,6 +800,7 @@ dependencies = [
 name = "taskstore"
 version = "0.6.3"
 dependencies = [
+ "build-version",
  "chrono",
  "clap",
  "colored",

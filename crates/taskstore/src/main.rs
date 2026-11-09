@@ -6,7 +6,7 @@ use taskstore::{Result, Store, rusqlite};
 #[derive(Parser)]
 #[command(name = "taskstore")]
 #[command(about = "TaskStore CLI - Generic persistent state management with SQLite+JSONL+Git")]
-#[command(version = env!("GIT_DESCRIBE"))]
+#[command(version = env!("BUILD_VERSION"))]
 struct Cli {
     /// Path to the store directory (default: current directory)
     #[arg(short, long, default_value = ".")]

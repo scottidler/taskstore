@@ -36,3 +36,6 @@ uuid = { version = "1.19.0", features = ["v7"] }
 
 [dev-dependencies]
 tempfile = "3.24.0"
+
+[build-dependencies]
+build-version = { git = "https://github.com/tatari-tv/build-version-rs", tag = "v0.1.0", version = "0.1.0" }
