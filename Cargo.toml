@@ -6,7 +6,7 @@ members = ["crates/*"]
 edition = "2024"
 authors = ["Scott A. Idler <scott.a.idler@gmail.com>"]
 license = "MIT"
-version = "0.6.3"
+version = "0.6.4"
 
 [workspace.dependencies]
 taskstore = { path = "crates/taskstore" }
